@@ -10,14 +10,14 @@ interface Props {
   results: ScenarioResult[];
   horizonYears: number;
   /** Rendered between the charts and the ledger. */
-  solver?: ComponentChildren;
+  extra?: ComponentChildren;
 }
 
 function best<T>(items: T[], score: (t: T) => number): T | undefined {
   return items.reduce<T | undefined>((a, b) => (a === undefined || score(b) > score(a) ? b : a), undefined);
 }
 
-export function Results({ results, horizonYears, solver }: Props) {
+export function Results({ results, horizonYears, extra }: Props) {
   const [realDollars, setRealDollars] = useState(true);
   const [focusId, setFocusId] = useState<string>('');
   const [ledgerId, setLedgerId] = useState<string>('');
@@ -153,7 +153,7 @@ export function Results({ results, horizonYears, solver }: Props) {
         <LineChart series={balanceSeries} xLabels={years} xContext={xContext} yFormat={moneyCompact} yMin={0} ariaLabel="Median savings by year for each scenario" />
       </section>
 
-      {solver}
+      {extra}
 
       <section class="card">
         <div class="card__head">
@@ -178,6 +178,7 @@ export function Results({ results, horizonYears, solver }: Props) {
                 <th>Ages</th>
                 <th>Income</th>
                 <th>Social Security</th>
+                <th title="Share and dollars of Social Security subject to income tax that year (IRS 0/50/85% rule, or the flat share on the Assumptions tab).">SS taxable</th>
                 <th>Expenses</th>
                 <th>Debt payments</th>
                 <th>Taxes</th>
@@ -194,6 +195,15 @@ export function Results({ results, horizonYears, solver }: Props) {
                   <td>{row.ages.join(' / ')}</td>
                   <td>{money(row.income)}</td>
                   <td>{money(row.socialSecurity)}</td>
+                  <td class="ledger__ss-tax">
+                    {row.socialSecurity > 0 ? (
+                      <>
+                        {pct(row.ssTaxablePct)} <span class="muted">· {money(row.ssTaxable)}</span>
+                      </>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
                   <td>{money(row.expenses)}</td>
                   <td>{money(row.debtPayments)}</td>
                   <td>{money(row.taxes)}</td>

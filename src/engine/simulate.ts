@@ -1,5 +1,6 @@
 import { ageAt, fromMonthIndex, offsetFrom, toMonthIndex } from '../model/dates';
 import type { AccountType, MarketAssumptions, SimScenario, SimulationSettings } from '../model/types';
+import { taxableSocialSecurityShare } from '../model/ssTax';
 import { sampleDeathAge, solveModalAge } from './mortality';
 import { Rng } from './rng';
 
@@ -19,6 +20,9 @@ export interface LedgerRow {
   debtPayments: number;
   taxes: number;
   withdrawals: number;
+  /** Dollars of Social Security subject to income tax this year, and that as a share of benefits (%). */
+  ssTaxable: number;
+  ssTaxablePct: number;
   endLiquid: number;
   endLiquidReal: number;
   endDebt: number;
@@ -72,8 +76,14 @@ interface Compiled {
   spendAfterDeath: number;
   ordinary: number;
   ssTaxable: number;
+  irsSsRule: boolean;
   warnings: string[];
 }
+
+/** Share of brokerage withdrawals assumed to be realized gains when estimating provisional income. */
+const BROKERAGE_GAIN_SHARE = 0.5;
+/** Plan years taxed at the assumed share before the IRS rule has a prior year of income to use. */
+const SS_ASSUMED_YEARS = 2;
 
 function compile(settings: SimulationSettings, s: SimScenario): Compiled {
   const { startDate, horizonYears } = settings;
@@ -166,6 +176,7 @@ function compile(settings: SimulationSettings, s: SimScenario): Compiled {
     spendAfterDeath: s.survivorExpensePct / 100,
     ordinary: s.taxes.ordinaryRate / 100,
     ssTaxable: s.taxes.ssTaxablePct / 100,
+    irsSsRule: s.taxes.ssTaxRule !== 'flat',
     warnings,
   };
 }
@@ -224,6 +235,7 @@ interface YearAccumulator {
   debtPayments: number;
   taxes: number;
   withdrawals: number;
+  ssTaxable: number;
   events: string[];
 }
 
@@ -261,6 +273,12 @@ function runPath(
   const loanBal = c.loans.map((l) => l.balance);
   let cpi = 1;
   let depletedAt = Infinity;
+  // Social Security taxation: the IRS rule needs the year's other income, which depends on
+  // withdrawals, which depend on taxes. Break the loop by using the previous plan year's other
+  // income with the current (annualized) benefit.
+  let ssShare = c.ssTaxable;
+  let priorOtherIncome = 0;
+  let yearOtherIncome = 0;
 
   const snapshot = (y: number) => {
     let liquid = 0;
@@ -274,6 +292,10 @@ function runPath(
   const years = c.months / 12;
   for (let m = 0; m < c.months; m++) {
     const acc = ledger?.years[Math.floor(m / 12)];
+    if (m > 0 && m % 12 === 0) {
+      priorOtherIncome = yearOtherIncome;
+      yearOtherIncome = 0;
+    }
     let nAlive = 0;
     for (let i = 0; i < nPeople; i++) if (m < death[i]) nAlive++;
     if (nPeople > 0 && nAlive === 0) {
@@ -299,6 +321,7 @@ function runPath(
       if (gross === 0) continue;
       if (inc.inflation) gross *= cpi;
       const tax = inc.taxable ? gross * c.ordinary : 0;
+      if (inc.taxable) yearOtherIncome += gross;
       taxes += tax;
       if (acc) acc.income += gross;
       if (inc.deposit >= 0) bal[inc.deposit] += gross - tax;
@@ -317,10 +340,18 @@ function runPath(
       ss += Math.max(own, survivor) * cpi;
     }
     if (ss > 0) {
-      const tax = ss * c.ssTaxable * c.ordinary;
+      if (c.irsSsRule && m >= SS_ASSUMED_YEARS * 12) {
+        let alive = 0;
+        for (let i = 0; i < nPeople; i++) if (m < death[i]) alive++;
+        ssShare = taxableSocialSecurityShare(ss * 12, priorOtherIncome, alive >= 2);
+      }
+      const tax = ss * ssShare * c.ordinary;
       taxes += tax;
       net += ss - tax;
-      if (acc) acc.socialSecurity += ss;
+      if (acc) {
+        acc.socialSecurity += ss;
+        acc.ssTaxable += ss * ssShare;
+      }
     }
 
     // Household spending scales down after a death; personal expenses stop with their owner.
@@ -371,6 +402,9 @@ function runPath(
         const gross = take / (1 - t);
         bal[i] -= gross;
         taxes += gross - take;
+        const type = c.accounts[i].type;
+        if (type === 'traditional') yearOtherIncome += gross;
+        else if (type === 'taxable') yearOtherIncome += gross * BROKERAGE_GAIN_SHARE;
         if (acc) acc.withdrawals += gross;
         need -= take;
         if (need <= 1e-6) break;
@@ -465,6 +499,7 @@ export function simulateScenario(
     debtPayments: 0,
     taxes: 0,
     withdrawals: 0,
+    ssTaxable: 0,
     events: [],
   }));
   const debt = new Array<number>(snapshots).fill(0);
@@ -487,6 +522,7 @@ export function simulateScenario(
     startDate: fromMonthIndex(startIndex + y * 12),
     ages: c.people.map((p) => Math.floor(p.age0 + y)),
     ...acc,
+    ssTaxablePct: acc.socialSecurity > 0 ? (acc.ssTaxable / acc.socialSecurity) * 100 : 0,
     endLiquid: detNominal[y + 1],
     endLiquidReal: detReal[y + 1],
     endDebt: debt[y + 1],
@@ -516,5 +552,44 @@ export function simulateScenario(
     ledger,
     warnings: c.warnings,
     runs,
+  };
+}
+
+export interface SummaryResult {
+  successRate: number;
+  runwayP10Years: number | null;
+  runwayP50Years: number | null;
+  medianEndingReal: number;
+  p10EndingReal: number;
+}
+
+/** Headline numbers only (no chart bands or ledger) — for searches over many candidates. */
+export function simulateSummary(settings: SimulationSettings, scenario: SimScenario): SummaryResult {
+  const c = compile(settings, scenario);
+  const mp = marketParams(scenario.market);
+  const runs = Math.max(1, Math.round(settings.runs));
+  const years = c.months / 12;
+  const snapshots = years + 1;
+  const stochastic = settings.mortality === 'stochastic';
+  const nominal = new Float64Array(snapshots);
+  const real = new Float64Array(snapshots);
+  const depletion = new Float64Array(runs);
+  const endingReal = new Float64Array(runs);
+  let successes = 0;
+  for (let r = 0; r < runs; r++) {
+    const { depletedAt } = runPath(c, mp, new Rng(settings.seed, r), stochastic, nominal, real, 0);
+    depletion[r] = depletedAt;
+    endingReal[r] = real[years];
+    if (!Number.isFinite(depletedAt)) successes++;
+  }
+  depletion.sort();
+  endingReal.sort();
+  const toYears = (months: number) => (Number.isFinite(months) ? months / 12 : null);
+  return {
+    successRate: (successes / runs) * 100,
+    runwayP10Years: toYears(depletion[Math.floor(0.1 * (runs - 1))]),
+    runwayP50Years: toYears(depletion[Math.floor(0.5 * (runs - 1))]),
+    medianEndingReal: percentile(endingReal, 50),
+    p10EndingReal: percentile(endingReal, 10),
   };
 }

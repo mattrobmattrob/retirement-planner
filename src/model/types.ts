@@ -23,9 +23,16 @@ export interface TaxAssumptions {
   ordinaryRate: number;
   /** Effective rate on withdrawals from taxable brokerage accounts, %. */
   taxableWithdrawalRate: number;
-  /** Share of Social Security that is taxable, %. */
+  /**
+   * Share of Social Security that is taxable, %. With the IRS rule this is the assumed share for
+   * the first two plan years, before the simulation has a prior year of income to go on.
+   */
   ssTaxablePct: number;
+  /** `irs`: 0/50/85% provisional-income rule on the prior year's simulated income. `flat`: always `ssTaxablePct`. */
+  ssTaxRule: SsTaxRule;
 }
+
+export type SsTaxRule = 'irs' | 'flat';
 
 export type MortalityMode = 'fixed' | 'stochastic';
 

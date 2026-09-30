@@ -1058,3 +1058,60 @@ th {
   vertical-align: -2px;
   background: var(--surface-2);
 }
+
+/* ---------- Explore ---------- */
+.subhead {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 14px 0 2px;
+}
+.effects {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+}
+.effect {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.effect__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+.effect__table td {
+  border: none;
+  padding: 2px 4px;
+  font-size: 12.5px;
+}
+.effect__label {
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.effect__bar {
+  width: 40%;
+}
+.bar {
+  display: block;
+  height: 8px;
+  border-radius: 0 4px 4px 0;
+  background: var(--series-1);
+  min-width: 2px;
+}
+.ranked td,
+.ranked th {
+  font-size: 12.5px;
+  padding: 5px 8px;
+}
+.ranked__choice {
+  text-align: left !important;
+  color: var(--text-2);
+}
+.ranked th.ranked__choice {
+  white-space: normal;
+  min-width: 90px;
+}

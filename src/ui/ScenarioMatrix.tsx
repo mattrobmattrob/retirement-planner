@@ -114,7 +114,7 @@ export function ScenarioMatrix(props: {
               type="button"
               class="btn btn--ghost"
               disabled={combos < 2 || combos > MAX_SCENARIOS}
-              title={combos > MAX_SCENARIOS ? `${combos} combinations — reduce options to ${MAX_SCENARIOS} or fewer, or use the claiming solver for Social Security.` : undefined}
+              title={combos > MAX_SCENARIOS ? `${combos} combinations — use “Explore all combinations” on the right to rank them all.` : undefined}
               onClick={() => {
                 if (window.confirm(`Replace all scenarios with every combination (${combos})?`)) {
                   const next = allCombinations(h);
@@ -127,6 +127,11 @@ export function ScenarioMatrix(props: {
             </button>
           </div>
           {full && <p class="muted">Up to {MAX_SCENARIOS} scenarios can be compared at once.</p>}
+          {combos > MAX_SCENARIOS && (
+            <p class="muted">
+              {combos.toLocaleString()} combinations is more than the comparison can chart — “Explore all combinations” (right) simulates and ranks all of them.
+            </p>
+          )}
         </div>
       </section>
 

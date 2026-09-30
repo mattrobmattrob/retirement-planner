@@ -56,7 +56,7 @@ export function defaultMarket(): MarketAssumptions {
 }
 
 export function defaultTaxes(): TaxAssumptions {
-  return { ordinaryRate: 15, taxableWithdrawalRate: 5, ssTaxablePct: 85 };
+  return { ordinaryRate: 15, taxableWithdrawalRate: 5, ssTaxablePct: 85, ssTaxRule: 'irs' };
 }
 
 export function defaultSettings(): SimulationSettings {

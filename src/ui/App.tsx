@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ScenarioResult } from '../engine/simulate';
 import type { WorkerRequest, WorkerResponse } from '../engine/worker';
-import { blankPlan, duplicateScenario, newOption, nextColorSlot, samplePlan } from '../model/defaults';
+import { blankPlan, duplicateScenario, newOption, newScenario, nextColorSlot, samplePlan } from '../model/defaults';
 import { normalizePlan } from '../model/normalize';
 import { formatAge } from '../model/socialSecurity';
-import type { Household, PlanFile, Scenario } from '../model/types';
+import type { Household, Person, PlanFile, Scenario } from '../model/types';
+import { ExplorePanel, type ScenarioPick } from './ExplorePanel';
 import { PlanEditor } from './PlanEditor';
 import { Results } from './Results';
 import { ScenarioMatrix } from './ScenarioMatrix';
@@ -89,6 +90,27 @@ function useSimulation(plan: PlanFile) {
 
 type Tab = 'plan' | 'scenarios' | 'assumptions';
 
+/**
+ * Make sure each person has a claim-age option for the given ages (reusing a matching one),
+ * returning the updated people and the option ids to pick.
+ */
+function ensureClaimOptions(people: Person[], ages: Record<string, number>) {
+  const choices: Record<string, string> = {};
+  const next = people.map((person) => {
+    const age = ages[person.id];
+    if (age === undefined) return person;
+    let option = person.ssOptions.find((o) => !o.off && o.value.auto && Math.abs(o.value.claimAge - age) < 1e-6);
+    if (option) {
+      choices[person.id] = option.id;
+      return person;
+    }
+    option = newOption(`Claim at ${formatAge(age)}`, { claimAge: age, monthlyBenefit: 0, auto: true });
+    choices[person.id] = option.id;
+    return { ...person, ssOptions: [...person.ssOptions, option] };
+  });
+  return { people: next, choices };
+}
+
 export function App() {
   const [plan, setPlan] = useState<PlanFile>(loadInitialPlan);
   const [tab, setTab] = useState<Tab>('plan');
@@ -101,24 +123,13 @@ export function App() {
   const updateHousehold = (fn: (h: Household) => Household) => setPlan((p) => ({ ...p, household: fn(p.household) }));
   const setScenarios = (scenarios: Scenario[]) => setPlan((p) => ({ ...p, scenarios }));
 
-  /** Make sure each person has a claim-age option for the solver's answer, then pick it. */
+  /** Pick the solver's claim ages, as a new scenario or in place. */
   const applyClaiming: ApplyClaiming = (scenarioId, ages, asNew) =>
     setPlan((p) => {
       const source = p.scenarios.find((s) => s.id === scenarioId);
       if (!source) return p;
-      const choices = { ...source.choices };
-      const people = p.household.people.map((person) => {
-        const age = ages[person.id];
-        if (age === undefined) return person;
-        let option = person.ssOptions.find((o) => !o.off && o.value.auto && Math.abs(o.value.claimAge - age) < 1e-6);
-        const ssOptions = [...person.ssOptions];
-        if (!option) {
-          option = newOption(`Claim at ${formatAge(age)}`, { claimAge: age, monthlyBenefit: 0, auto: true });
-          ssOptions.push(option);
-        }
-        choices[person.id] = option.id;
-        return { ...person, ssOptions };
-      });
+      const { people, choices: claimChoices } = ensureClaimOptions(p.household.people, ages);
+      const choices = { ...source.choices, ...claimChoices };
       const label = p.household.people
         .filter((person) => ages[person.id] !== undefined)
         .map((person) => `${person.name.replace(/^Person /, '')} ${formatAge(ages[person.id])}`)
@@ -126,6 +137,22 @@ export function App() {
       const scenarios = asNew
         ? [...p.scenarios, { ...duplicateScenario(source, nextColorSlot(p.scenarios)), name: `${source.name} · SS ${label}`, choices }]
         : p.scenarios.map((s) => (s.id === scenarioId ? { ...s, choices } : s));
+      return { ...p, household: { ...p.household, people }, scenarios };
+    });
+
+  /** Promote explored combinations into the comparison. */
+  const addPicks = (picks: ScenarioPick[]) =>
+    setPlan((p) => {
+      let people = p.household.people;
+      const scenarios = [...p.scenarios];
+      for (const pick of picks) {
+        if (scenarios.length >= MAX_SCENARIOS) break;
+        const ensured = ensureClaimOptions(people, pick.claimAges);
+        people = ensured.people;
+        scenarios.push(
+          newScenario({ name: pick.name, colorSlot: nextColorSlot(scenarios), choices: { ...pick.choices, ...ensured.choices } }),
+        );
+      }
       return { ...p, household: { ...p.household, people }, scenarios };
     });
 
@@ -250,7 +277,12 @@ export function App() {
           <Results
             results={results}
             horizonYears={plan.settings.horizonYears}
-            solver={<SolverPanel plan={plan} onApply={applyClaiming} canAddScenario={plan.scenarios.length < MAX_SCENARIOS} />}
+            extra={
+              <>
+                <ExplorePanel plan={plan} onAdd={addPicks} capacity={MAX_SCENARIOS - plan.scenarios.length} />
+                <SolverPanel plan={plan} onApply={applyClaiming} canAddScenario={plan.scenarios.length < MAX_SCENARIOS} />
+              </>
+            }
           />
         </section>
       </main>

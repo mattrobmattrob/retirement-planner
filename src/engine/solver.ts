@@ -2,7 +2,7 @@ import { ageAt, isYearMonth } from '../model/dates';
 import { chosenOption, resolveScenario } from '../model/resolve';
 import { benefitAtClaimAge, MAX_CLAIM_AGE, MIN_CLAIM_AGE } from '../model/socialSecurity';
 import type { PlanFile, SimScenario } from '../model/types';
-import { simulateScenario } from './simulate';
+import { simulateSummary } from './simulate';
 
 export type SolverGoal = 'success' | 'median' | 'p10';
 
@@ -83,7 +83,7 @@ export function solveClaiming(
       sim.people[s.index].ssClaimAge = ages[i];
       sim.people[s.index].ssMonthlyBenefit = benefitAtClaimAge(s.p.ssKnownBenefit, s.p.ssKnownAge, s.birthYear, ages[i]);
     });
-    const r = simulateScenario(settings, sim);
+    const r = simulateSummary(settings, sim);
     const partial = {
       ages,
       successRate: r.successRate,

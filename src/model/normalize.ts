@@ -109,6 +109,7 @@ function normalizeHousehold(raw: unknown): Household {
   const r = isObj(raw) ? raw : {};
   const h = merge(emptyHousehold(), r);
   h.taxes = merge(defaultTaxes(), r.taxes);
+  h.taxes.ssTaxRule = oneOf(h.taxes.ssTaxRule, ['irs', 'flat'] as const, 'irs');
   h.people = arr(r.people).map((p) => {
     const base = merge(newPerson(), p);
     const po = isObj(p) ? p : {};

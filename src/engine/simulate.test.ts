@@ -34,7 +34,7 @@ const loan = (partial: Partial<SimLoan> = {}): SimLoan => ({
 function scenario(partial: Partial<SimScenario>): SimScenario {
   return {
     id: 's', name: 'S', colorSlot: 0, people: [], accounts: [], loans: [], expenses: [], incomes: [],
-    taxes: { ordinaryRate: 0, taxableWithdrawalRate: 0, ssTaxablePct: 0 }, survivorExpensePct: 70,
+    taxes: { ordinaryRate: 0, taxableWithdrawalRate: 0, ssTaxablePct: 0, ssTaxRule: 'flat' }, survivorExpensePct: 70,
     surplusAccount: -1, market: flatMarket, ...partial,
   };
 }
@@ -114,6 +114,35 @@ describe('simulateScenario', () => {
     const r = simulateScenario(settings(), s);
     expect(r.liquidNominal[50][1]).toBeCloseTo(48_000, 6);
     expect(r.liquidNominal[50][2]).toBeCloseTo(48_000 + 36_000, 6);
+  });
+
+  it('applies the IRS rule to Social Security from plan year 3, after two assumed years', () => {
+    // $2,000/mo benefit and no other income: provisional income $12K is under the threshold.
+    const s = scenario({
+      people: [person({ birthDate: '1956-01', ssClaimAge: 62, ssMonthlyBenefit: 2_000 })],
+      accounts: [account('cash', 0)],
+      taxes: { ordinaryRate: 10, taxableWithdrawalRate: 0, ssTaxablePct: 85, ssTaxRule: 'irs' },
+    });
+    const r = simulateScenario(settings(), s);
+    const shares = r.ledger.slice(0, 3).map((row) => row.ssTaxablePct);
+    [85, 85, 0].forEach((expected, i) => expect(shares[i]).toBeCloseTo(expected, 6));
+    expect(r.ledger[0].ssTaxable).toBeCloseTo(24_000 * 0.85, 6);
+    expect(r.ledger[0].taxes).toBeCloseTo(24_000 * 0.85 * 0.1, 6);
+    expect(r.ledger[2].taxes).toBe(0);
+
+    const flat = simulateScenario(settings(), { ...s, taxes: { ...s.taxes, ssTaxRule: 'flat' } });
+    expect(flat.ledger[2].ssTaxablePct).toBeCloseTo(85, 6);
+  });
+
+  it('counts pre-tax withdrawals toward provisional income', () => {
+    const s = scenario({
+      people: [person({ birthDate: '1956-01', ssClaimAge: 62, ssMonthlyBenefit: 2_000 })],
+      accounts: [account('traditional', 2_000_000)],
+      expenses: [expense(6_000)],
+      taxes: { ordinaryRate: 10, taxableWithdrawalRate: 0, ssTaxablePct: 85, ssTaxRule: 'irs' },
+    });
+    const r = simulateScenario(settings(), s);
+    expect(r.ledger[2].ssTaxablePct).toBeCloseTo(85, 6);
   });
 
   it('is reproducible for a fixed seed', () => {

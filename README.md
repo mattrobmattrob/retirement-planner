@@ -23,6 +23,10 @@ mortgage vs. keep paying" never means re-entering the whole plan.
   (life insurance), each with an owner and a survivorship %. Severance "lump sum vs. monthly × N"
   is just several options on one item. Any item can have a "Not included" option.
 - **Scenarios tab**: a grid of decisions × scenarios, plus "every combination" (up to 8).
+- **Explore all combinations**: simulates every combination of options — optionally with every
+  Social Security claim age 62–70 for each person — in parallel Web Workers, then shows how much
+  each decision matters (average success per option, and how often it wins when everything else
+  is equal) and a ranked table. Any row, or the top 3, can be promoted into the comparison.
 - **Social Security claiming solver**: for a chosen scenario, tries every claim age 62–70 for
   each person (whole years, then month by month around the best) against the same market paths,
   and shows a heatmap. The best pair can be added as a new scenario in one click.
@@ -39,8 +43,14 @@ mortgage vs. keep paying" never means re-entering the whole plan.
   from the plan, not luck.
 - Monthly surpluses go to the chosen surplus account; shortfalls are withdrawn in withdrawal order.
   A run "fails" if spending can't be covered while anyone is alive.
-- Taxes are effective flat rates (ordinary income, brokerage withdrawals, taxable share of Social
-  Security). RMDs, IRMAA, contribution limits, spousal benefits, and brackets are not modeled.
+- Taxes are effective flat rates on ordinary income and brokerage withdrawals.
+- Social Security: the first two plan years assume the configured taxable share (default 85%).
+  From year 3 the IRS 0/50/85% provisional-income rule applies, using the prior plan year's
+  simulated other income (taxable income, pre-tax withdrawals, and half of brokerage withdrawals as
+  gains) with the current annualized benefit, against the fixed $32K/$44K joint or $25K/$34K
+  single thresholds. The year-by-year table shows the taxable share and dollars. A flat share is
+  available instead.
+- RMDs, IRMAA, contribution limits, spousal benefits, and tax brackets are not modeled.
 - This is a planning aid, not financial advice.
 
 ## Plan file format
@@ -64,7 +74,7 @@ Source layout:
 
 - `src/model` — plan types, example plan, JSON import/migration, Social Security rules, and
   `resolve.ts` (turns a scenario's picks into the engine's flat input)
-- `src/engine` — seeded RNG, mortality, simulation, claiming solver, Web Worker entry
+- `src/engine` — seeded RNG, mortality, simulation, combination explorer, claiming solver, Web Worker entry
 - `src/ui` — Preact components and SVG charts
 
 ## Deploying to GitHub Pages

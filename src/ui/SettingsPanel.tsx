@@ -73,11 +73,29 @@ export function SettingsPanel(props: {
             {taxes.ordinaryRate}% ordinary · {taxes.taxableWithdrawalRate}% brokerage
           </span>
         </summary>
-        <p class="section__desc">Effective (average) rates. Roth, HSA and cash withdrawals are tax-free.</p>
+        <p class="section__desc">Effective (average) rates. Roth, HSA and cash withdrawals are tax-free. The year-by-year table shows the share of Social Security taxed each year.</p>
         <div class="section__body grid">
           <NumField label="Ordinary income tax" hint="Effective rate on taxable income and pre-tax IRA/401(k) withdrawals." value={taxes.ordinaryRate} suffix="%" min={0} max={95} onChange={(ordinaryRate) => setTax({ ordinaryRate })} />
           <NumField label="Brokerage withdrawals" hint="Effective tax per dollar withdrawn from a taxable account (capital gains on the gain portion)." value={taxes.taxableWithdrawalRate} suffix="%" min={0} max={95} onChange={(taxableWithdrawalRate) => setTax({ taxableWithdrawalRate })} />
-          <NumField label="Taxable share of SS" value={taxes.ssTaxablePct} suffix="%" min={0} max={100} onChange={(ssTaxablePct) => setTax({ ssTaxablePct })} />
+          <SelectField
+            label="Social Security taxation"
+            hint="IRS rule: from plan year 3, the taxable share (0%, up to 50%, or up to 85%) follows the prior year's simulated provisional income — taxable income, pre-tax withdrawals, half of brokerage withdrawals as gains, plus half of benefits — against the fixed $32K/$44K joint ($25K/$34K single) thresholds."
+            value={taxes.ssTaxRule}
+            options={[
+              { value: 'irs', label: 'IRS 0/50/85% rule' },
+              { value: 'flat', label: 'Flat taxable share' },
+            ]}
+            onChange={(ssTaxRule) => setTax({ ssTaxRule })}
+          />
+          <NumField
+            label={taxes.ssTaxRule === 'irs' ? 'Taxable share, years 1–2' : 'Taxable share of SS'}
+            hint={taxes.ssTaxRule === 'irs' ? 'Assumed until the simulation has a prior year of income to apply the IRS rule to.' : undefined}
+            value={taxes.ssTaxablePct}
+            suffix="%"
+            min={0}
+            max={100}
+            onChange={(ssTaxablePct) => setTax({ ssTaxablePct })}
+          />
         </div>
       </details>
     </div>

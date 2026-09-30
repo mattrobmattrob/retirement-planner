@@ -155,3 +155,38 @@ describe('solveClaiming', () => {
     expect(r.best.score).toBeGreaterThanOrEqual(r.current.score);
   });
 });
+
+describe('explore', () => {
+  it('enumerates every combination, including every claim age when asked', async () => {
+    const { buildAxes, comboAt, comboCount, exploreRange, summarizeEffects } = await import('../engine/explore');
+    const plan = samplePlan();
+    const axes = buildAxes(plan, false);
+    expect(comboCount(axes)).toBe(72);
+    // Mixed radix: the last index decodes to the last value of every axis.
+    expect(comboAt(axes, 71)).toEqual(axes.map((a) => a.values.length - 1));
+
+    const withAges = buildAxes(plan, true);
+    expect(withAges.filter((a) => a.kind === 'ss-age')).toHaveLength(2);
+    expect(withAges[0].values.map((v) => v.claimAge)).toEqual([62, 63, 64, 65, 66, 67, 68, 69, 70]);
+
+    const rows = exploreRange(plan, false, 60, 0, comboCount(axes));
+    expect(rows).toHaveLength(72);
+    const effects = summarizeEffects(axes, rows, 'success');
+    expect(effects).toHaveLength(axes.length);
+    for (const e of effects) expect(e.values.reduce((s, v) => s + v.bestShare, 0)).toBeCloseTo(100, 6);
+  });
+});
+
+describe('Social Security taxation (IRS rule)', () => {
+  it('taxes 0%, up to 50%, or up to 85% of benefits by provisional income', async () => {
+    const { taxableSocialSecurity } = await import('./ssTax');
+    // Joint, $40K benefits: provisional = other + 20K.
+    expect(taxableSocialSecurity(40000, 10000, true)).toBe(0); // PI 30K ≤ 32K
+    expect(taxableSocialSecurity(40000, 20000, true)).toBe(4000); // PI 40K: ½ × (40K − 32K)
+    expect(taxableSocialSecurity(40000, 60000, true)).toBe(0.85 * 40000); // capped at 85%
+    // PI 50K: 0.85 × (50K − 44K) + min(20K, 6K) = 5.1K + 6K
+    expect(taxableSocialSecurity(40000, 30000, true)).toBeCloseTo(11100, 6);
+    // Single thresholds are lower: PI 30K → ½ × (30K − 25K)
+    expect(taxableSocialSecurity(20000, 20000, false)).toBe(2500);
+  });
+});
