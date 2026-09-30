@@ -57,8 +57,10 @@ export interface ScenarioResult {
   scenarioId: string;
   name: string;
   colorSlot: number;
-  /** Calendar month of each snapshot: index 0 is the start, index y is after y years. */
-  snapshotDates: string[];
+  /** Snapshot 0 is the plan start ("today"); snapshot k ≥ 1 is the end of calendar year `snapshotYears[k]`. */
+  snapshotYears: (number | null)[];
+  /** Months elapsed at each snapshot. */
+  snapshotMonths: number[];
   /** Age of each person at each snapshot. */
   ages: { name: string; values: number[] }[];
   liquidReal: Bands;
@@ -108,11 +110,17 @@ interface Compiled {
 
 /** Share of brokerage withdrawals assumed to be realized gains when estimating provisional income. */
 const BROKERAGE_GAIN_SHARE = 0.5;
+/**
+ * Tax years (the rest of this year, then next Jan–Dec) taxed at the configured Social Security
+ * share, without a true-up, before the IRS rule takes over.
+ */
+export const SS_ASSUMED_TAX_YEARS = 2;
 
 
 function compile(settings: SimulationSettings, s: SimScenario): Compiled {
   const { startDate, horizonYears } = settings;
-  const months = Math.max(1, Math.round(horizonYears)) * 12;
+  // The rest of this calendar year plus `horizonYears` full calendar years.
+  const months = 12 - (toMonthIndex(startDate) % 12) + Math.max(1, Math.round(horizonYears)) * 12;
   const warnings: string[] = [];
   const at = (ym: string, fallback: number) => offsetFrom(startDate, ym, fallback);
 
@@ -293,7 +301,7 @@ function newYearAccumulator(): YearAccumulator {
  * Simulate one path month by month. With `rng === null` every random quantity takes its
  * expected value, which produces the deterministic ledger.
  *
- * `liquidNominal`/`liquidReal` receive one value per snapshot (years + 1 entries).
+ * `liquidNominal`/`liquidReal` receive one value per snapshot: the start, then each calendar year end.
  */
 function runPath(
   c: Compiled,
@@ -341,7 +349,7 @@ function runPath(
   const closeTaxYear = (settle: boolean) => {
     let actual = ytdEstimated;
     let basis: SsTaxDetail['basis'] = c.irsSsRule ? 'irs' : 'flat';
-    if (c.irsSsRule && taxYear === 0 && c.startCalMonth > 0) basis = 'assumed';
+    if (c.irsSsRule && taxYear < SS_ASSUMED_TAX_YEARS) basis = 'assumed';
     if (basis === 'irs') actual = taxableSocialSecurity(ytdSs, ytdOther, joint);
     const raw = (actual - ytdEstimated) * c.ordinary;
     const settlement = Math.abs(raw) < 0.01 ? 0 : raw;
@@ -383,7 +391,7 @@ function runPath(
   };
   snapshot(0);
 
-  const years = c.months / 12;
+  const lastSnapshot = Math.floor((c.startCalMonth + c.months - 1) / 12) + 1;
   for (let m = 0; m < c.months; m++) {
     const calMonth = (c.startCalMonth + m) % 12;
     const ty = Math.floor((c.startCalMonth + m) / 12);
@@ -397,7 +405,7 @@ function runPath(
     if (nPeople > 0 && nAlive === 0) {
       // Everyone has died: the plan succeeded. Freeze the estate for the remaining snapshots.
       closeTaxYear(false);
-      for (let y = Math.floor(m / 12) + 1; y <= years; y++) snapshot(y);
+      for (let y = ty + 1; y <= lastSnapshot; y++) snapshot(y);
       break;
     }
     const acc = ledger?.[ty];
@@ -447,8 +455,7 @@ function runPath(
       ss += Math.max(own, survivor) * cpi;
     }
     if (ss > 0) {
-      // The first tax year has no prior year to estimate from, so it uses the configured share.
-      const assumed = !c.irsSsRule || taxYear === 0;
+      const assumed = !c.irsSsRule || taxYear < SS_ASSUMED_TAX_YEARS;
       const share = assumed ? c.ssTaxable : taxableSocialSecurityShare(ss * 12, priorOther, nAlive >= 2);
       const tax = ss * share * c.ordinary;
       taxes += tax;
@@ -545,8 +552,10 @@ function runPath(
     }
     cpi *= 1 + infl;
 
-    if ((m + 1) % 12 === 0) snapshot((m + 1) / 12);
-    if (calMonth === 11 || m === c.months - 1) closeLedgerYear(ty);
+    if (calMonth === 11 || m === c.months - 1) {
+      snapshot(ty + 1);
+      closeLedgerYear(ty);
+    }
     if (m === c.months - 1) closeTaxYear(false);
   }
 
@@ -580,8 +589,9 @@ export function simulateScenario(
   const c = compile(settings, scenario);
   const mp = marketParams(scenario.market);
   const runs = Math.max(1, Math.round(settings.runs));
-  const years = c.months / 12;
-  const snapshots = years + 1;
+  const taxYears = Math.floor((c.startCalMonth + c.months - 1) / 12) + 1;
+  const snapshots = taxYears + 1;
+  const snapshotMonths = Array.from({ length: snapshots }, (_, k) => (k === 0 ? 0 : Math.min(c.months, 12 - c.startCalMonth + (k - 1) * 12)));
   const stochastic = settings.mortality === 'stochastic';
 
   const nominal = new Float64Array(runs * snapshots);
@@ -593,12 +603,11 @@ export function simulateScenario(
     const rng = new Rng(settings.seed, r);
     const { depletedAt } = runPath(c, mp, rng, stochastic, nominal, real, r * snapshots);
     depletion[r] = depletedAt;
-    for (let y = 0; y < snapshots; y++) if (depletedAt >= y * 12) funded[y]++;
+    for (let k = 0; k < snapshots; k++) if (depletedAt >= snapshotMonths[k]) funded[k]++;
     if (onProgress && r % 250 === 0) onProgress(r / runs);
   }
 
   // Deterministic "expected case" ledger (fixed mortality, expected returns), by calendar year.
-  const taxYears = Math.floor((c.startCalMonth + c.months - 1) / 12) + 1;
   const ledgerYears = Array.from({ length: taxYears }, newYearAccumulator);
   const detNominal = new Float64Array(snapshots);
   const detReal = new Float64Array(snapshots);
@@ -606,10 +615,10 @@ export function simulateScenario(
 
   const startIndex = toMonthIndex(settings.startDate);
   const startYear = Math.floor(startIndex / 12);
-  const snapshotDates = Array.from({ length: snapshots }, (_, y) => fromMonthIndex(startIndex + y * 12));
+  const snapshotYears = snapshotMonths.map((_, k) => (k === 0 ? null : startYear + k - 1));
   const ages = c.people.map((p) => ({
     name: p.name,
-    values: Array.from({ length: snapshots }, (_, y) => p.age0 + y),
+    values: snapshotMonths.map((months) => p.age0 + months / 12),
   }));
 
   const ledger: LedgerRow[] = ledgerYears
@@ -643,7 +652,7 @@ export function simulateScenario(
   depletion.sort();
   const toYears = (months: number) => (Number.isFinite(months) ? months / 12 : null);
   const endingReal = new Float64Array(runs);
-  for (let r = 0; r < runs; r++) endingReal[r] = real[r * snapshots + years];
+  for (let r = 0; r < runs; r++) endingReal[r] = real[r * snapshots + snapshots - 1];
   endingReal.sort();
 
   onProgress?.(1);
@@ -651,7 +660,8 @@ export function simulateScenario(
     scenarioId: scenario.id,
     name: scenario.name,
     colorSlot: scenario.colorSlot,
-    snapshotDates,
+    snapshotYears,
+    snapshotMonths,
     ages,
     liquidReal: bands(real, runs, snapshots),
     liquidNominal: bands(nominal, runs, snapshots),
@@ -680,8 +690,7 @@ export function simulateSummary(settings: SimulationSettings, scenario: SimScena
   const c = compile(settings, scenario);
   const mp = marketParams(scenario.market);
   const runs = Math.max(1, Math.round(settings.runs));
-  const years = c.months / 12;
-  const snapshots = years + 1;
+  const snapshots = Math.floor((c.startCalMonth + c.months - 1) / 12) + 2;
   const stochastic = settings.mortality === 'stochastic';
   const nominal = new Float64Array(snapshots);
   const real = new Float64Array(snapshots);
@@ -691,7 +700,7 @@ export function simulateSummary(settings: SimulationSettings, scenario: SimScena
   for (let r = 0; r < runs; r++) {
     const { depletedAt } = runPath(c, mp, new Rng(settings.seed, r), stochastic, nominal, real, 0);
     depletion[r] = depletedAt;
-    endingReal[r] = real[years];
+    endingReal[r] = real[snapshots - 1];
     if (!Number.isFinite(depletedAt)) successes++;
   }
   depletion.sort();

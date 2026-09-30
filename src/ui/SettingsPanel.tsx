@@ -33,13 +33,21 @@ export function SettingsPanel(props: {
         <summary>
           <span class="section__title">Simulation</span>
           <span class="section__summary">
-            {s.runs.toLocaleString()} runs · {s.horizonYears} yrs
+            {s.runs.toLocaleString()} runs · through {+s.startDate.slice(0, 4) + s.horizonYears}
           </span>
         </summary>
         <p class="section__desc">Applies to every scenario. All scenarios replay the same random market paths, so differences come from the plan, not luck.</p>
         <div class="section__body grid">
           <MonthField label="Plan starts" value={s.startDate} onChange={(startDate) => set({ startDate })} />
-          <NumField label="Years to simulate" value={s.horizonYears} suffix="yrs" min={1} max={80} onChange={(horizonYears) => set({ horizonYears: Math.round(horizonYears) })} />
+          <NumField
+            label={`Full years after ${s.startDate.slice(0, 4)}`}
+            hint={`Simulates the rest of ${s.startDate.slice(0, 4)}, then this many full calendar years — through December ${+s.startDate.slice(0, 4) + s.horizonYears}.`}
+            value={s.horizonYears}
+            suffix="yrs"
+            min={1}
+            max={80}
+            onChange={(horizonYears) => set({ horizonYears: Math.round(horizonYears) })}
+          />
           <NumField label="Simulations" hint="More runs = smoother results but slower. 1,000–5,000 is plenty." value={s.runs} min={1} max={50000} onChange={(runs) => set({ runs: Math.round(runs) })} />
           <NumField label="Random seed" hint="Same seed = same results. Change it to check the results are stable." value={s.seed} onChange={(seed) => set({ seed: Math.round(seed) })} />
           <SelectField
@@ -79,7 +87,7 @@ export function SettingsPanel(props: {
           <NumField label="Brokerage withdrawals" hint="Effective tax per dollar withdrawn from a taxable account (capital gains on the gain portion)." value={taxes.taxableWithdrawalRate} suffix="%" min={0} max={95} onChange={(taxableWithdrawalRate) => setTax({ taxableWithdrawalRate })} />
           <SelectField
             label="Social Security taxation"
-            hint="IRS rule: from plan year 3, the taxable share (0%, up to 50%, or up to 85%) follows the prior year's simulated provisional income — taxable income, pre-tax withdrawals, half of brokerage withdrawals as gains, plus half of benefits — against the fixed $32K/$44K joint ($25K/$34K single) thresholds."
+            hint="IRS rule: after the two assumed years, each calendar year's taxable share (anywhere from 0% to 85%) comes from that year's simulated provisional income — taxable income, pre-tax withdrawals, half of brokerage withdrawals as gains, plus half of benefits — against the fixed $32K/$44K joint ($25K/$34K single) thresholds. Monthly tax is estimated from the prior year and trued up the following April."
             value={taxes.ssTaxRule}
             options={[
               { value: 'irs', label: 'IRS 0/50/85% rule' },
@@ -88,8 +96,8 @@ export function SettingsPanel(props: {
             onChange={(ssTaxRule) => setTax({ ssTaxRule })}
           />
           <NumField
-            label={taxes.ssTaxRule === 'irs' ? 'Taxable share, years 1–2' : 'Taxable share of SS'}
-            hint={taxes.ssTaxRule === 'irs' ? 'Assumed until the simulation has a prior year of income to apply the IRS rule to.' : undefined}
+            label={taxes.ssTaxRule === 'irs' ? `Taxable share, rest of ${s.startDate.slice(0, 4)} & ${+s.startDate.slice(0, 4) + 1}` : 'Taxable share of SS'}
+            hint={taxes.ssTaxRule === 'irs' ? `Used for the rest of ${s.startDate.slice(0, 4)} and all of ${+s.startDate.slice(0, 4) + 1}. From ${+s.startDate.slice(0, 4) + 2} the IRS rule applies to each year's simulated income, trued up the following April.` : undefined}
             value={taxes.ssTaxablePct}
             suffix="%"
             min={0}

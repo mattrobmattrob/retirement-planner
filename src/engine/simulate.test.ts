@@ -42,7 +42,9 @@ function scenario(partial: Partial<SimScenario>): SimScenario {
 describe('simulateScenario', () => {
   it('spends down cash linearly with no returns or inflation', () => {
     const s = scenario({ accounts: [account('cash', 120_000)], expenses: [expense(1_000)] });
-    const r = simulateScenario(settings(), s);
+    // Starting in January: 2026 plus 9 full years = 120 months.
+    const r = simulateScenario(settings({ horizonYears: 9 }), s);
+    expect(r.snapshotYears.slice(0, 3)).toEqual([null, 2026, 2027]);
     expect(r.liquidNominal[50][1]).toBeCloseTo(108_000, 6);
     expect(r.liquidNominal[50][10]).toBeCloseTo(0, 6);
     expect(r.successRate).toBe(100);
@@ -116,7 +118,16 @@ describe('simulateScenario', () => {
     expect(r.liquidNominal[50][2]).toBeCloseTo(48_000 + 36_000, 6);
   });
 
-  it('assumes the configured share in a partial first tax year, then applies the IRS rule', () => {
+  it('snapshots today, then each calendar year end', () => {
+    const s = scenario({ accounts: [account('cash', 10_000)], expenses: [expense(1_000)] });
+    const r = simulateScenario(settings({ startDate: '2026-09', horizonYears: 2 }), s);
+    expect(r.snapshotYears).toEqual([null, 2026, 2027, 2028]);
+    expect(r.snapshotMonths).toEqual([0, 4, 16, 28]);
+    expect(r.liquidNominal[50][1]).toBeCloseTo(6_000, 6); // Sep–Dec 2026
+    expect(r.runwayP50Years).toBeCloseTo(10 / 12, 6); // runs out in July 2027
+  });
+
+  it('assumes the configured share for the rest of this year and next year, then applies the IRS rule', () => {
     // $2,000/mo benefit and no other income: provisional income $12K is under the threshold.
     const s = scenario({
       people: [person({ birthDate: '1956-01', ssClaimAge: 62, ssMonthlyBenefit: 2_000 })],
@@ -125,30 +136,30 @@ describe('simulateScenario', () => {
     });
     const r = simulateScenario(settings({ startDate: '2026-09' }), s);
     expect(r.ledger[0]).toEqual(expect.objectContaining({ year: 2026, firstMonth: '2026-09', lastMonth: '2026-12' }));
-    expect(r.ledger[0].ssDetail?.basis).toBe('assumed');
-    expect(r.ledger[0].ssTaxablePct).toBeCloseTo(85, 6);
-    expect(r.ledger[0].taxes).toBeCloseTo(8_000 * 0.85 * 0.1, 6);
-    expect(r.ledger[1].ssDetail).toEqual(expect.objectContaining({ basis: 'irs', tier: 0, taxable: 0, settlement: 0 }));
-    expect(r.ledger[1].taxes).toBe(0);
+    expect(r.ledger.slice(0, 3).map((row) => row.ssDetail?.basis)).toEqual(['assumed', 'assumed', 'irs']);
+    expect(r.ledger[1].ssTaxablePct).toBeCloseTo(85, 6);
+    expect(r.ledger[1].taxes).toBeCloseTo(24_000 * 0.85 * 0.1, 6);
+    expect(r.ledger[2].ssDetail).toEqual(expect.objectContaining({ tier: 0, taxable: 0, settlement: 0 }));
+    expect(r.ledger[2].taxes).toBe(0);
 
     const flat = simulateScenario(settings({ startDate: '2026-09' }), { ...s, taxes: { ...s.taxes, ssTaxRule: 'flat' } });
-    expect(flat.ledger[1].ssTaxablePct).toBeCloseTo(85, 6);
+    expect(flat.ledger[2].ssTaxablePct).toBeCloseTo(85, 6);
   });
 
-  it('trues up a full first year the following April', () => {
+  it('trues up the estimate the following April', () => {
+    // 2028: a one-time $90K expense paid from the pre-tax account pushes provisional income over
+    // the thresholds, but the monthly estimate (from 2027's zero other income) was 0%.
     const s = scenario({
       people: [person({ birthDate: '1956-01', ssClaimAge: 62, ssMonthlyBenefit: 2_000 })],
-      accounts: [account('cash', 0)],
+      accounts: [account('traditional', 1_000_000)],
+      expenses: [expense(90_000, { frequency: 'once', startDate: '2028-06' })],
       taxes: { ordinaryRate: 10, taxableWithdrawalRate: 0, ssTaxablePct: 85, ssTaxRule: 'irs' },
     });
-    // Starting in January, 2026 is a full simulated year: withheld at 85%, actually 0% taxable.
     const r = simulateScenario(settings({ startDate: '2026-01' }), s);
-    const withheld = 24_000 * 0.85 * 0.1;
-    expect(r.ledger[0].ssDetail).toEqual(expect.objectContaining({ basis: 'irs', taxable: 0 }));
-    expect(r.ledger[0].ssDetail!.settlement).toBeCloseTo(-withheld, 6);
-    expect(r.ledger[1].settlementPaid).toBeCloseTo(-withheld, 6);
-    expect(r.ledger[1].taxes).toBeCloseTo(-withheld, 6);
-    expect(r.liquidNominal[50][2]).toBeCloseTo(24_000 - withheld + 24_000 + withheld, 6);
+    const owed = 24_000 * 0.85 * 0.1;
+    expect(r.ledger[2].ssDetail).toEqual(expect.objectContaining({ basis: 'irs', tier: 85, estimatedTaxable: 0 }));
+    expect(r.ledger[2].ssDetail!.settlement).toBeCloseTo(owed, 6);
+    expect(r.ledger[3].settlementPaid).toBeCloseTo(owed, 6);
   });
 
   it('counts pre-tax withdrawals toward provisional income', () => {

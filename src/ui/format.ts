@@ -15,7 +15,21 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 /** `2032-09` → `Sep 2032` */
 export const monthLabel = (ym: string) => `${MONTHS[+ym.slice(5, 7) - 1]} ${ym.slice(0, 4)}`;
 
-export function runway(years: number | null): string {
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * How long savings last, as the calendar year they run out plus the duration from the plan start:
+ * "2039 · 13.2 yrs".
+ */
+export function runway(years: number | null, startDate?: string): string {
   if (years === null) return 'Never runs out';
-  return `${years.toFixed(1)} yrs`;
+  if (!startDate) return `${years.toFixed(1)} yrs`;
+  const start = +startDate.slice(0, 4) * 12 + (+startDate.slice(5, 7) - 1);
+  const year = Math.floor((start + Math.round(years * 12)) / 12);
+  return `${year} · ${years.toFixed(1)} yrs`;
+}
+
+/** "2026-09" → "Sep 2026" */
+export function monthName(ym: string): string {
+  return `${MONTH_NAMES[+ym.slice(5, 7) - 1]} ${ym.slice(0, 4)}`;
 }

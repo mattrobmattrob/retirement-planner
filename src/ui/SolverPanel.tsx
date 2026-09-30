@@ -124,7 +124,7 @@ export function SolverPanel(props: { plan: PlanFile; onApply: ApplyClaiming; can
               <div class="field__label">Best for “{resultScenario.name}”</div>
               <div class="solver-best__ages">{agesText(result, result.best)}</div>
               <div class="muted">
-                Success {pct(result.best.successRate)} · Runway (90%) {runway(result.best.runwayP10Years)} · Median ending {moneyCompact(result.best.medianEndingReal)} · Poor-market ending{' '}
+                Success {pct(result.best.successRate)} · Runway (90%) {runway(result.best.runwayP10Years, plan.settings.startDate)} · Median ending {moneyCompact(result.best.medianEndingReal)} · Poor-market ending{' '}
                 {moneyCompact(result.best.p10EndingReal)}
               </div>
               <div class="muted">

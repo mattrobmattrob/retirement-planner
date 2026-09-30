@@ -277,6 +277,7 @@ export function App() {
           <Results
             results={results}
             horizonYears={plan.settings.horizonYears}
+            startDate={plan.settings.startDate}
             extra={
               <>
                 <ExplorePanel plan={plan} onAdd={addPicks} capacity={MAX_SCENARIOS - plan.scenarios.length} />

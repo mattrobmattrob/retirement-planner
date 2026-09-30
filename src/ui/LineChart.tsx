@@ -13,6 +13,8 @@ export interface ChartSeries {
 interface Props {
   series: ChartSeries[];
   xLabels: string[];
+  /** Tooltip heading per x (defaults to the axis label). */
+  xTitles?: string[];
   /** Extra per-x context lines for the tooltip (e.g. ages). */
   xContext?: (i: number) => string;
   yFormat: (v: number) => string;
@@ -48,7 +50,7 @@ function useWidth<T extends HTMLElement>() {
   return [ref, width] as const;
 }
 
-export function LineChart({ series, xLabels, xContext, yFormat, yMin, yMax, height = 280, ariaLabel }: Props) {
+export function LineChart({ series, xLabels, xTitles, xContext, yFormat, yMin, yMax, height = 280, ariaLabel }: Props) {
   const [ref, width] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
 
@@ -125,7 +127,7 @@ export function LineChart({ series, xLabels, xContext, yFormat, yMin, yMax, heig
       </svg>
       {hover !== null && (
         <div class="tooltip" style={{ left: `${tooltipLeft}px`, transform: flip ? 'translateX(calc(-100% - 12px))' : 'translateX(12px)' }}>
-          <div class="tooltip__title">{xLabels[hover]}</div>
+          <div class="tooltip__title">{xTitles?.[hover] ?? xLabels[hover]}</div>
           {xContext && <div class="tooltip__context">{xContext(hover)}</div>}
           {[...series]
             .sort((a, b) => b.values[hover] - a.values[hover])

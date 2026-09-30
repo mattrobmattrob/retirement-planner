@@ -2,7 +2,7 @@ import type { ComponentChildren } from 'preact';
 import { useState } from 'preact/hooks';
 import type { LedgerRow, ScenarioResult } from '../engine/simulate';
 import { SS_TAX_THRESHOLDS } from '../model/ssTax';
-import { money, moneyCompact, pct, runway } from './format';
+import { money, moneyCompact, monthName, pct, runway } from './format';
 import { Legend, LineChart, type ChartSeries } from './LineChart';
 
 export const seriesColor = (slot: number) => `var(--series-${(slot % 8) + 1})`;
@@ -10,6 +10,7 @@ export const seriesColor = (slot: number) => `var(--series-${(slot % 8) + 1})`;
 interface Props {
   results: ScenarioResult[];
   horizonYears: number;
+  startDate: string;
   /** Rendered between the charts and the ledger. */
   extra?: ComponentChildren;
 }
@@ -18,7 +19,7 @@ function best<T>(items: T[], score: (t: T) => number): T | undefined {
   return items.reduce<T | undefined>((a, b) => (a === undefined || score(b) > score(a) ? b : a), undefined);
 }
 
-export function Results({ results, horizonYears, extra }: Props) {
+export function Results({ results, horizonYears, startDate, extra }: Props) {
   const [realDollars, setRealDollars] = useState(true);
   const [focusId, setFocusId] = useState<string>('');
   const [ledgerId, setLedgerId] = useState<string>('');
@@ -26,7 +27,8 @@ export function Results({ results, horizonYears, extra }: Props) {
 
   const focus = results.find((r) => r.scenarioId === focusId) ?? results[0];
   const ledgerScenario = results.find((r) => r.scenarioId === ledgerId) ?? results[0];
-  const years = results[0].snapshotDates.map((d) => d.slice(0, 4));
+  const years = results[0].snapshotYears.map((y) => (y === null ? 'Today' : String(y)));
+  const xTitles = results[0].snapshotYears.map((y) => (y === null ? `Today (${monthName(startDate)})` : `End of ${y}`));
   const ages = results[0].ages;
   const xContext = (i: number) => ages.map((a) => `${a.name} ${Math.floor(a.values[i])}`).join(' · ');
   const legend = results.map((r) => ({ key: r.scenarioId, label: r.name, color: seriesColor(r.colorSlot) }));
@@ -80,8 +82,8 @@ export function Results({ results, horizonYears, extra }: Props) {
               <tr>
                 <th>Scenario</th>
                 <th title="Share of simulations where savings covered every expense for as long as anyone was alive (within the plan horizon).">Success</th>
-                <th title="90% of simulations last at least this long before savings run out.">Runway (90%)</th>
-                <th title="Half of simulations last at least this long.">Runway (median)</th>
+                <th title="90% of simulations still have savings until at least this year (and this long from today).">Runway (90%)</th>
+                <th title="Half of simulations still have savings until at least this year.">Runway (median)</th>
                 <th title="Median savings at the end of the plan, in today's dollars.">Median ending</th>
                 <th title="In a bad-luck case (10th percentile), savings at the end, in today's dollars.">Poor-market ending</th>
               </tr>
@@ -94,8 +96,8 @@ export function Results({ results, horizonYears, extra }: Props) {
                     {r.name}
                   </td>
                   <td class={mark(bestSuccess, r)}>{pct(r.successRate)}</td>
-                  <td class={mark(bestRunway, r)}>{runway(r.runwayP10Years)}</td>
-                  <td>{runway(r.runwayP50Years)}</td>
+                  <td class={mark(bestRunway, r)}>{runway(r.runwayP10Years, startDate)}</td>
+                  <td>{runway(r.runwayP50Years, startDate)}</td>
                   <td class={mark(bestEnding, r)}>{moneyCompact(r.medianEndingReal)}</td>
                   <td class={mark(bestP10, r)}>{moneyCompact(r.p10EndingReal)}</td>
                 </tr>
@@ -104,17 +106,18 @@ export function Results({ results, horizonYears, extra }: Props) {
           </table>
         </div>
         <p class="footnote">
-          {results[0].runs.toLocaleString()} simulations per scenario. Bold marks the best value in each column. "Runway (90%)" is how long savings last in all but the unluckiest 10% of markets; "Never runs out" means savings outlast everyone (or the {horizonYears}-year horizon).
+          {results[0].runs.toLocaleString()} simulations per scenario. Bold marks the best value in each column. "Runway (90%)" is how long savings last in all but the unluckiest 10% of markets; "Never runs out" means savings outlast everyone (or the plan, through {+startDate.slice(0, 4) + horizonYears}).
         </p>
       </section>
 
       <section class="card">
         <h2>Chance savings last</h2>
-        <p class="card__sub">Share of simulations that still have money at the start of each year.</p>
+        <p class="card__sub">Share of simulations that still have money at the end of each year.</p>
         <Legend items={legend} />
         <LineChart
           series={fundedSeries}
           xLabels={years}
+          xTitles={xTitles}
           xContext={xContext}
           yFormat={(v) => pct(v)}
           yMin={0}
@@ -151,7 +154,7 @@ export function Results({ results, horizonYears, extra }: Props) {
           Liquid savings across all accounts. Lines are medians; shading shows the range of outcomes for the selected scenario.
         </p>
         <Legend items={legend} />
-        <LineChart series={balanceSeries} xLabels={years} xContext={xContext} yFormat={moneyCompact} yMin={0} ariaLabel="Median savings by year for each scenario" />
+        <LineChart series={balanceSeries} xLabels={years} xTitles={xTitles} xContext={xContext} yFormat={moneyCompact} yMin={0} ariaLabel="Median savings by year for each scenario" />
       </section>
 
       {extra}
@@ -252,8 +255,8 @@ function ssTaxExplanation(row: LedgerRow): string {
   }
   if (d.basis === 'assumed') {
     lines.push(
-      `First partial year: assumed ${pct(row.ssTaxablePct)} taxable = ${money(d.taxable)}`,
-      'Income earned before the plan start is unknown, so this year is not trued up.',
+      `Assumed ${pct(row.ssTaxablePct)} taxable = ${money(d.taxable)} (Assumptions tab)`,
+      'The rest of the first year and the following year use the assumed share without a true-up; the IRS rule applies after that.',
     );
     return lines.join('\n');
   }

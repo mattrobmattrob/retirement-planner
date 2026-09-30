@@ -239,7 +239,7 @@ export function ExplorePanel(props: { plan: PlanFile; onAdd: (picks: ScenarioPic
                     <tr key={row.index}>
                       <td class="muted">{i + 1}</td>
                       <td>{pct(row.successRate)}</td>
-                      <td>{runway(row.runwayP10Years)}</td>
+                      <td>{runway(row.runwayP10Years, result.plan.settings.startDate)}</td>
                       <td>{moneyCompact(row.medianEndingReal)}</td>
                       <td>{moneyCompact(row.p10EndingReal)}</td>
                       {result.axes.map((a, k) => (
