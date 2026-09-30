@@ -1,3 +1,4 @@
+import type { ComponentChildren } from 'preact';
 import { useState } from 'preact/hooks';
 import type { ScenarioResult } from '../engine/simulate';
 import { money, moneyCompact, monthLabel, pct, runway } from './format';
@@ -8,13 +9,15 @@ export const seriesColor = (slot: number) => `var(--series-${(slot % 8) + 1})`;
 interface Props {
   results: ScenarioResult[];
   horizonYears: number;
+  /** Rendered between the charts and the ledger. */
+  solver?: ComponentChildren;
 }
 
 function best<T>(items: T[], score: (t: T) => number): T | undefined {
   return items.reduce<T | undefined>((a, b) => (a === undefined || score(b) > score(a) ? b : a), undefined);
 }
 
-export function Results({ results, horizonYears }: Props) {
+export function Results({ results, horizonYears, solver }: Props) {
   const [realDollars, setRealDollars] = useState(true);
   const [focusId, setFocusId] = useState<string>('');
   const [ledgerId, setLedgerId] = useState<string>('');
@@ -149,6 +152,8 @@ export function Results({ results, horizonYears }: Props) {
         <Legend items={legend} />
         <LineChart series={balanceSeries} xLabels={years} xContext={xContext} yFormat={moneyCompact} yMin={0} ariaLabel="Median savings by year for each scenario" />
       </section>
+
+      {solver}
 
       <section class="card">
         <div class="card__head">

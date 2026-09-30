@@ -1,19 +1,26 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ScenarioResult } from '../engine/simulate';
 import type { WorkerRequest, WorkerResponse } from '../engine/worker';
-import { defaultSettings, duplicateScenario, newScenario, nextColorSlot, samplePlan } from '../model/defaults';
+import { blankPlan, duplicateScenario, newOption, nextColorSlot, samplePlan } from '../model/defaults';
 import { normalizePlan } from '../model/normalize';
-import type { PlanFile, Scenario } from '../model/types';
-import { Results, seriesColor } from './Results';
-import { ScenarioEditor } from './ScenarioEditor';
+import { formatAge } from '../model/socialSecurity';
+import type { Household, PlanFile, Scenario } from '../model/types';
+import { PlanEditor } from './PlanEditor';
+import { Results } from './Results';
+import { ScenarioMatrix } from './ScenarioMatrix';
 import { SettingsPanel } from './SettingsPanel';
+import { SolverPanel, type ApplyClaiming } from './SolverPanel';
 
-const STORAGE_KEY = 'retirement-planner:plan:v1';
+const STORAGE_KEY = 'retirement-planner:plan:v2';
+const LEGACY_STORAGE_KEYS = ['retirement-planner:plan:v1'];
+const MAX_SCENARIOS = 8;
 
 function loadInitialPlan(): PlanFile {
   try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) return normalizePlan(JSON.parse(saved));
+    for (const key of [STORAGE_KEY, ...LEGACY_STORAGE_KEYS]) {
+      const saved = localStorage.getItem(key);
+      if (saved) return normalizePlan(JSON.parse(saved));
+    }
   } catch {
     /* storage unavailable or corrupt — fall back to the example */
   }
@@ -57,23 +64,21 @@ function useSimulation(plan: PlanFile) {
       w.onmessage = (e: MessageEvent<WorkerResponse>) => {
         const msg = e.data;
         if (msg.id !== id) return;
-        if (msg.type === 'progress') setProgress(msg.fraction);
-        else {
-          setProgress(null);
-          if (msg.type === 'done') {
-            setResults(msg.results);
-            setElapsed(msg.elapsedMs);
-            setError(null);
-          } else setError(msg.message);
-          w.terminate();
-          if (worker.current === w) worker.current = null;
-        }
+        if (msg.type === 'progress') return setProgress(msg.fraction);
+        setProgress(null);
+        if (msg.type === 'simulated') {
+          setResults(msg.results);
+          setElapsed(msg.elapsedMs);
+          setError(null);
+        } else if (msg.type === 'error') setError(msg.message);
+        w.terminate();
+        if (worker.current === w) worker.current = null;
       };
       w.onerror = (e) => {
         setProgress(null);
         setError(e.message || 'Simulation failed.');
       };
-      w.postMessage({ id, plan } satisfies WorkerRequest);
+      w.postMessage({ id, type: 'simulate', plan } satisfies WorkerRequest);
     }, 400);
     return () => clearTimeout(timer);
   }, [plan]);
@@ -82,52 +87,52 @@ function useSimulation(plan: PlanFile) {
   return { results, progress, error, elapsed };
 }
 
+type Tab = 'plan' | 'scenarios' | 'assumptions';
+
 export function App() {
   const [plan, setPlan] = useState<PlanFile>(loadInitialPlan);
-  const [tab, setTab] = useState<string>(() => plan.scenarios[0]?.id ?? 'settings');
+  const [tab, setTab] = useState<Tab>('plan');
   const [importError, setImportError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const { results, progress, error, elapsed } = useSimulation(plan);
 
   useEffect(() => savePlan(plan), [plan]);
 
-  const active = plan.scenarios.find((s) => s.id === tab);
-  const updateScenario = (id: string) => (fn: (s: Scenario) => Scenario) =>
-    setPlan((p) => ({ ...p, scenarios: p.scenarios.map((s) => (s.id === id ? fn(s) : s)) }));
+  const updateHousehold = (fn: (h: Household) => Household) => setPlan((p) => ({ ...p, household: fn(p.household) }));
+  const setScenarios = (scenarios: Scenario[]) => setPlan((p) => ({ ...p, scenarios }));
 
-  const addScenario = (source?: Scenario) => {
-    const slot = nextColorSlot(plan.scenarios);
-    const created = source
-      ? duplicateScenario(source, slot)
-      : newScenario({ name: `Scenario ${String.fromCharCode(65 + plan.scenarios.length)}`, colorSlot: slot });
-    setPlan((p) => ({ ...p, scenarios: [...p.scenarios, created] }));
-    setTab(created.id);
-  };
-
-  const removeScenario = (id: string) => {
-    if (plan.scenarios.length <= 1) return;
-    const name = plan.scenarios.find((s) => s.id === id)?.name;
-    if (!window.confirm(`Delete "${name}"?`)) return;
-    const remaining = plan.scenarios.filter((s) => s.id !== id);
-    setPlan((p) => ({ ...p, scenarios: remaining }));
-    setTab(remaining[0].id);
-  };
-
-  const moveScenario = (id: string, delta: number) =>
+  /** Make sure each person has a claim-age option for the solver's answer, then pick it. */
+  const applyClaiming: ApplyClaiming = (scenarioId, ages, asNew) =>
     setPlan((p) => {
-      const list = [...p.scenarios];
-      const i = list.findIndex((s) => s.id === id);
-      const j = i + delta;
-      if (i < 0 || j < 0 || j >= list.length) return p;
-      [list[i], list[j]] = [list[j], list[i]];
-      return { ...p, scenarios: list };
+      const source = p.scenarios.find((s) => s.id === scenarioId);
+      if (!source) return p;
+      const choices = { ...source.choices };
+      const people = p.household.people.map((person) => {
+        const age = ages[person.id];
+        if (age === undefined) return person;
+        let option = person.ssOptions.find((o) => !o.off && o.value.auto && Math.abs(o.value.claimAge - age) < 1e-6);
+        const ssOptions = [...person.ssOptions];
+        if (!option) {
+          option = newOption(`Claim at ${formatAge(age)}`, { claimAge: age, monthlyBenefit: 0, auto: true });
+          ssOptions.push(option);
+        }
+        choices[person.id] = option.id;
+        return { ...person, ssOptions };
+      });
+      const label = p.household.people
+        .filter((person) => ages[person.id] !== undefined)
+        .map((person) => `${person.name.replace(/^Person /, '')} ${formatAge(ages[person.id])}`)
+        .join(', ');
+      const scenarios = asNew
+        ? [...p.scenarios, { ...duplicateScenario(source, nextColorSlot(p.scenarios)), name: `${source.name} · SS ${label}`, choices }]
+        : p.scenarios.map((s) => (s.id === scenarioId ? { ...s, choices } : s));
+      return { ...p, household: { ...p.household, people }, scenarios };
     });
 
   const importFile = async (file: File) => {
     try {
       const next = normalizePlan(JSON.parse(await file.text()));
       setPlan(next);
-      setTab(next.scenarios[0].id);
       setImportError(null);
     } catch (err) {
       setImportError(`Couldn't load ${file.name}: ${err instanceof Error ? err.message : String(err)}`);
@@ -137,7 +142,7 @@ export function App() {
   const resetTo = (next: PlanFile, label: string) => {
     if (!window.confirm(`Replace the current plan with ${label}? Download it first if you want to keep it.`)) return;
     setPlan(next);
-    setTab(next.scenarios[0].id);
+    setTab('plan');
   };
 
   return (
@@ -180,15 +185,7 @@ export function App() {
               <button type="button" onClick={() => resetTo(samplePlan(), 'the example plan')}>
                 Load example plan
               </button>
-              <button
-                type="button"
-                onClick={() =>
-                  resetTo(
-                    { format: 'retirement-planner', version: 1, settings: defaultSettings(), scenarios: [newScenario({ name: 'Scenario A' })] },
-                    'a blank plan',
-                  )
-                }
-              >
+              <button type="button" onClick={() => resetTo(blankPlan(), 'a blank plan')}>
                 Start blank plan
               </button>
             </div>
@@ -206,41 +203,29 @@ export function App() {
 
       <main class="layout">
         <aside class="panel">
-          <nav class="tabs" aria-label="Scenarios">
-            {plan.scenarios.map((s) => (
-              <button type="button" key={s.id} class="tab" aria-current={tab === s.id} onClick={() => setTab(s.id)}>
-                <span class="swatch" style={{ background: seriesColor(s.colorSlot) }} />
-                <span class="tab__label">{s.name}</span>
+          <nav class="tabs" role="tablist" aria-label="Editor">
+            {(
+              [
+                ['plan', 'Plan'],
+                ['scenarios', `Scenarios (${plan.scenarios.length})`],
+                ['assumptions', 'Assumptions'],
+              ] as const
+            ).map(([key, label]) => (
+              <button type="button" role="tab" key={key} class="tab" aria-selected={tab === key} onClick={() => setTab(key)}>
+                {label}
               </button>
             ))}
-            <button type="button" class="tab tab--add" onClick={() => addScenario()} title="New empty scenario">
-              + New
-            </button>
-            <button type="button" class="tab tab--settings" aria-current={tab === 'settings'} onClick={() => setTab('settings')}>
-              ⚙ Assumptions
-            </button>
           </nav>
 
-          {active ? (
-            <>
-              <div class="scenario-actions">
-                <button type="button" class="btn btn--small" onClick={() => addScenario(active)}>
-                  Duplicate
-                </button>
-                <button type="button" class="btn btn--small" onClick={() => moveScenario(active.id, -1)} aria-label="Move left">
-                  ←
-                </button>
-                <button type="button" class="btn btn--small" onClick={() => moveScenario(active.id, 1)} aria-label="Move right">
-                  →
-                </button>
-                <button type="button" class="btn btn--small btn--danger" disabled={plan.scenarios.length <= 1} onClick={() => removeScenario(active.id)}>
-                  Delete
-                </button>
-              </div>
-              <ScenarioEditor key={active.id} scenario={active} startDate={plan.settings.startDate} update={updateScenario(active.id)} />
-            </>
-          ) : (
-            <SettingsPanel settings={plan.settings} onChange={(settings) => setPlan((p) => ({ ...p, settings }))} />
+          {tab === 'plan' && <PlanEditor household={plan.household} scenarios={plan.scenarios} startDate={plan.settings.startDate} update={updateHousehold} />}
+          {tab === 'scenarios' && <ScenarioMatrix household={plan.household} scenarios={plan.scenarios} onChange={setScenarios} />}
+          {tab === 'assumptions' && (
+            <SettingsPanel
+              settings={plan.settings}
+              onChange={(settings) => setPlan((p) => ({ ...p, settings }))}
+              taxes={plan.household.taxes}
+              onTaxesChange={(taxes) => updateHousehold((h) => ({ ...h, taxes }))}
+            />
           )}
         </aside>
 
@@ -262,7 +247,11 @@ export function App() {
               )
             )}
           </div>
-          <Results results={results} horizonYears={plan.settings.horizonYears} />
+          <Results
+            results={results}
+            horizonYears={plan.settings.horizonYears}
+            solver={<SolverPanel plan={plan} onApply={applyClaiming} canAddScenario={plan.scenarios.length < MAX_SCENARIOS} />}
+          />
         </section>
       </main>
     </div>

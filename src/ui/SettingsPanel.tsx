@@ -1,4 +1,4 @@
-import type { MarketAssumptions, SimulationSettings } from '../model/types';
+import type { MarketAssumptions, SimulationSettings, TaxAssumptions } from '../model/types';
 import { MonthField, NumField, SelectField } from './fields';
 
 export function MarketFields(props: { market: MarketAssumptions; onChange: (m: MarketAssumptions) => void }) {
@@ -18,8 +18,14 @@ export function MarketFields(props: { market: MarketAssumptions; onChange: (m: M
   );
 }
 
-export function SettingsPanel(props: { settings: SimulationSettings; onChange: (s: SimulationSettings) => void }) {
-  const { settings: s, onChange } = props;
+export function SettingsPanel(props: {
+  settings: SimulationSettings;
+  onChange: (s: SimulationSettings) => void;
+  taxes: TaxAssumptions;
+  onTaxesChange: (t: TaxAssumptions) => void;
+}) {
+  const { settings: s, onChange, taxes, onTaxesChange } = props;
+  const setTax = (patch: Partial<TaxAssumptions>) => onTaxesChange({ ...taxes, ...patch });
   const set = (patch: Partial<SimulationSettings>) => onChange({ ...s, ...patch });
   return (
     <div class="editor">
@@ -58,6 +64,20 @@ export function SettingsPanel(props: { settings: SimulationSettings; onChange: (
         <p class="section__desc">Nominal annual figures. Invested accounts earn a monthly-rebalanced stock/bond mix; returns are drawn from a log-normal distribution each month.</p>
         <div class="section__body">
           <MarketFields market={s.market} onChange={(market) => set({ market })} />
+        </div>
+      </details>
+      <details class="section" open>
+        <summary>
+          <span class="section__title">Taxes</span>
+          <span class="section__summary">
+            {taxes.ordinaryRate}% ordinary · {taxes.taxableWithdrawalRate}% brokerage
+          </span>
+        </summary>
+        <p class="section__desc">Effective (average) rates. Roth, HSA and cash withdrawals are tax-free.</p>
+        <div class="section__body grid">
+          <NumField label="Ordinary income tax" hint="Effective rate on taxable income and pre-tax IRA/401(k) withdrawals." value={taxes.ordinaryRate} suffix="%" min={0} max={95} onChange={(ordinaryRate) => setTax({ ordinaryRate })} />
+          <NumField label="Brokerage withdrawals" hint="Effective tax per dollar withdrawn from a taxable account (capital gains on the gain portion)." value={taxes.taxableWithdrawalRate} suffix="%" min={0} max={95} onChange={(taxableWithdrawalRate) => setTax({ taxableWithdrawalRate })} />
+          <NumField label="Taxable share of SS" value={taxes.ssTaxablePct} suffix="%" min={0} max={100} onChange={(ssTaxablePct) => setTax({ ssTaxablePct })} />
         </div>
       </details>
     </div>

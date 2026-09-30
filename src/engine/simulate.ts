@@ -1,5 +1,5 @@
 import { ageAt, fromMonthIndex, offsetFrom, toMonthIndex } from '../model/dates';
-import type { AccountType, MarketAssumptions, PlanFile, Scenario } from '../model/types';
+import type { AccountType, MarketAssumptions, SimScenario, SimulationSettings } from '../model/types';
 import { sampleDeathAge, solveModalAge } from './mortality';
 import { Rng } from './rng';
 
@@ -64,7 +64,7 @@ interface Compiled {
     taxable: boolean;
     deposit: number;
   }[];
-  expenses: { amount: number; freq: 'monthly' | 'annual' | 'once'; start: number; end: number; inflation: boolean }[];
+  expenses: { amount: number; freq: 'monthly' | 'annual' | 'once'; start: number; end: number; inflation: boolean; owner: number }[];
   loans: { name: string; balance: number; rate: number; payment: number; payoff: number }[];
   accounts: { balance: number; type: AccountType; stock: number; tax: number }[];
   order: number[];
@@ -75,8 +75,8 @@ interface Compiled {
   warnings: string[];
 }
 
-function compile(plan: PlanFile, s: Scenario): Compiled {
-  const { startDate, horizonYears } = plan.settings;
+function compile(settings: SimulationSettings, s: SimScenario): Compiled {
+  const { startDate, horizonYears } = settings;
   const months = Math.max(1, Math.round(horizonYears)) * 12;
   const warnings: string[] = [];
   const at = (ym: string, fallback: number) => offsetFrom(startDate, ym, fallback);
@@ -93,7 +93,6 @@ function compile(plan: PlanFile, s: Scenario): Compiled {
       fixedDeathMonth: Math.max(0, Math.round((p.lifeExpectancy - age0) * 12)),
     };
   });
-  const personIndex = new Map(s.people.map((p, i) => [p.id, i]));
 
   const accounts = s.accounts.map((a) => ({
     balance: a.balance,
@@ -118,12 +117,11 @@ function compile(plan: PlanFile, s: Scenario): Compiled {
     priority.push(0);
   }
   const order = accounts.map((_, i) => i).sort((a, b) => priority[a] - priority[b] || a - b);
-  const accountIndex = new Map(s.accounts.map((a, i) => [a.id, i]));
-  let surplus = accountIndex.get(s.surplusAccountId) ?? -1;
+  let surplus = s.surplusAccount < accounts.length ? s.surplusAccount : -1;
   if (surplus < 0) surplus = order.find((i) => accounts[i].type === 'cash') ?? order[0];
 
   const incomes = s.incomes.map((inc) => {
-    const owner = inc.ownerId ? personIndex.get(inc.ownerId) ?? -1 : -1;
+    const owner = inc.owner;
     if (inc.kind === 'death-benefit' && owner < 0) warnings.push(`"${inc.name}" needs an owner to pay out.`);
     return {
       name: inc.name,
@@ -135,7 +133,7 @@ function compile(plan: PlanFile, s: Scenario): Compiled {
       survivor: Math.min(100, Math.max(0, inc.survivorPct)) / 100,
       inflation: inc.inflationAdjusted,
       taxable: inc.taxable,
-      deposit: inc.depositToId ? accountIndex.get(inc.depositToId) ?? -1 : -1,
+      deposit: inc.depositTo,
     };
   });
 
@@ -145,6 +143,7 @@ function compile(plan: PlanFile, s: Scenario): Compiled {
     start: at(e.startDate, 0),
     end: at(e.endDate, Infinity),
     inflation: e.inflationAdjusted,
+    owner: e.owner,
   }));
 
   const loans = s.loans.map((l) => {
@@ -324,15 +323,16 @@ function runPath(
       if (acc) acc.socialSecurity += ss;
     }
 
+    // Household spending scales down after a death; personal expenses stop with their owner.
     const spendFactor = nPeople >= 2 && nAlive < nPeople ? c.spendAfterDeath : 1;
     let spend = 0;
     for (const e of c.expenses) {
       if (m < e.start || m > e.end) continue;
       if (e.freq === 'once' && m !== e.start) continue;
-      if (e.freq === 'annual' && (m - e.start) % 12 !== 0) continue;
-      spend += e.amount * (e.inflation ? cpi : 1);
+      if (e.freq === 'annual' && (((m - e.start) % 12) + 12) % 12 !== 0) continue;
+      if (e.owner >= 0 && m >= death[e.owner]) continue;
+      spend += e.amount * (e.inflation ? cpi : 1) * (e.owner >= 0 ? 1 : spendFactor);
     }
-    spend *= spendFactor;
     net -= spend;
     if (acc) acc.expenses += spend;
 
@@ -432,21 +432,17 @@ function bands(values: Float64Array, runs: number, snapshots: number): Bands {
   return out;
 }
 
-export function scenarioMarket(plan: PlanFile, s: Scenario): MarketAssumptions {
-  return s.marketOverride ?? plan.settings.market;
-}
-
 export function simulateScenario(
-  plan: PlanFile,
-  scenario: Scenario,
+  settings: SimulationSettings,
+  scenario: SimScenario,
   onProgress?: (fraction: number) => void,
 ): ScenarioResult {
-  const c = compile(plan, scenario);
-  const mp = marketParams(scenarioMarket(plan, scenario));
-  const runs = Math.max(1, Math.round(plan.settings.runs));
+  const c = compile(settings, scenario);
+  const mp = marketParams(scenario.market);
+  const runs = Math.max(1, Math.round(settings.runs));
   const years = c.months / 12;
   const snapshots = years + 1;
-  const stochastic = plan.settings.mortality === 'stochastic';
+  const stochastic = settings.mortality === 'stochastic';
 
   const nominal = new Float64Array(runs * snapshots);
   const real = new Float64Array(runs * snapshots);
@@ -454,7 +450,7 @@ export function simulateScenario(
   const funded = new Array<number>(snapshots).fill(0);
 
   for (let r = 0; r < runs; r++) {
-    const rng = new Rng(plan.settings.seed, r);
+    const rng = new Rng(settings.seed, r);
     const { depletedAt } = runPath(c, mp, rng, stochastic, nominal, real, r * snapshots);
     depletion[r] = depletedAt;
     for (let y = 0; y < snapshots; y++) if (depletedAt >= y * 12) funded[y]++;
@@ -476,7 +472,7 @@ export function simulateScenario(
   const detReal = new Float64Array(snapshots);
   runPath(c, mp, null, false, detNominal, detReal, 0, { years: ledgerYears, debt });
 
-  const startIndex = toMonthIndex(plan.settings.startDate);
+  const startIndex = toMonthIndex(settings.startDate);
   const snapshotDates = Array.from({ length: snapshots }, (_, y) => fromMonthIndex(startIndex + y * 12));
   const ages = c.people.map((p) => ({
     name: p.name,

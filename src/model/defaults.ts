@@ -1,16 +1,25 @@
 import { currentYearMonth, fromMonthIndex, toMonthIndex } from './dates';
+import { decisions } from './resolve';
 import type {
   Account,
   AccountType,
   Expense,
+  ExpenseChoice,
+  ExpenseFrequency,
+  ExpensePhase,
+  Household,
   Income,
+  IncomeChoice,
+  IncomeKind,
   Loan,
   MarketAssumptions,
+  Option,
   Person,
   PlanFile,
   Scenario,
   SimulationSettings,
   TaxAssumptions,
+  When,
 } from './types';
 
 export function newId(): string {
@@ -20,7 +29,7 @@ export function newId(): string {
 export const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = {
   cash: 'Cash / savings',
   taxable: 'Taxable brokerage',
-  traditional: 'Traditional IRA / 401(k)',
+  traditional: 'Pre-tax IRA / 401(k)',
   roth: 'Roth IRA / 401(k)',
   hsa: 'HSA',
 };
@@ -61,27 +70,41 @@ export function defaultSettings(): SimulationSettings {
   };
 }
 
+export function newOption<T>(label: string, value: T, off = false): Option<T> {
+  return { id: newId(), label, off, value };
+}
+
+/** Copy an option (fresh ids all the way down) so edits don't leak between options. */
+export function cloneOption<T>(option: Option<T>, label: string): Option<T> {
+  const value = structuredClone(option.value) as T & { phases?: ExpensePhase[] };
+  if (Array.isArray(value.phases)) value.phases = value.phases.map((p) => ({ ...p, id: newId() }));
+  return { ...option, id: newId(), label, off: false, value };
+}
+
+export const START: When = { type: 'start' };
+export const NEVER: When = { type: 'never' };
+
 export function newPerson(partial: Partial<Person> = {}): Person {
   return {
     id: newId(),
     name: 'Person',
     birthDate: '1965-01',
     lifeExpectancy: 90,
-    ssClaimAge: 67,
-    ssMonthlyBenefit: 2000,
+    ssKnownBenefit: 2000,
+    ssKnownAge: 67,
+    ssOptions: [newOption('Claim at 67', { claimAge: 67, monthlyBenefit: 0, auto: true })],
     ...partial,
   };
 }
 
-export function newAccount(partial: Partial<Account> = {}): Account {
-  const type = partial.type ?? 'taxable';
+export function newAccount(type: AccountType = 'taxable', partial: Partial<Account> = {}, balance = 0): Account {
   return {
     id: newId(),
     name: ACCOUNT_TYPE_LABELS[type],
     type,
-    balance: 0,
     stockPct: type === 'cash' ? 0 : 60,
     withdrawalPriority: DEFAULT_WITHDRAWAL_PRIORITY[type],
+    options: [newOption('Balance', { balance })],
     ...partial,
   };
 }
@@ -93,47 +116,59 @@ export function newLoan(partial: Partial<Loan> = {}): Loan {
     balance: 10000,
     annualRate: 7,
     monthlyPayment: 300,
-    payoffDate: '',
+    options: [newOption('Keep paying', { payoffDate: '' })],
     ...partial,
   };
 }
 
-export function newExpense(partial: Partial<Expense> = {}): Expense {
+export function newPhase(amount: number, from: When = START): ExpensePhase {
+  return { id: newId(), amount, from };
+}
+
+export function expenseChoice(frequency: ExpenseFrequency, phases: ExpensePhase[], until: When = NEVER): ExpenseChoice {
+  return { frequency, phases, until };
+}
+
+export function newExpense(
+  name = 'Expense',
+  choice: ExpenseChoice = expenseChoice('monthly', [newPhase(500)]),
+  partial: Partial<Expense> = {},
+): Expense {
   return {
     id: newId(),
-    name: 'Expense',
-    amount: 500,
-    frequency: 'monthly',
-    startDate: '',
-    endDate: '',
+    name,
     inflationAdjusted: true,
+    ownerId: '',
+    options: [newOption('Amount', choice)],
     ...partial,
   };
 }
 
-export function newIncome(partial: Partial<Income> = {}): Income {
+export function incomeChoice(kind: IncomeKind, partial: Partial<IncomeChoice> = {}): IncomeChoice {
   return {
-    id: newId(),
-    name: 'Income',
-    kind: 'monthly',
-    amount: 1000,
-    startDate: currentYearMonth(),
-    endDate: '',
-    ownerId: '',
-    survivorPct: 0,
+    kind,
+    amount: kind === 'monthly' ? 1000 : 50000,
+    start: START,
+    payments: 0,
+    end: NEVER,
+    survivorPct: kind === 'monthly' ? 0 : 100,
     inflationAdjusted: false,
-    taxable: true,
+    taxable: kind !== 'death-benefit',
     depositToId: '',
     ...partial,
   };
 }
 
+export function newIncome(name: string, options: Option<IncomeChoice>[], partial: Partial<Income> = {}): Income {
+  return { id: newId(), name, ownerId: '', options, ...partial };
+}
+
 export function newScenario(partial: Partial<Scenario> = {}): Scenario {
+  return { id: newId(), name: 'Scenario', notes: '', colorSlot: 0, choices: {}, marketOverride: null, ...partial };
+}
+
+export function emptyHousehold(): Household {
   return {
-    id: newId(),
-    name: 'New scenario',
-    notes: '',
-    colorSlot: 0,
     people: [],
     accounts: [],
     loans: [],
@@ -142,39 +177,25 @@ export function newScenario(partial: Partial<Scenario> = {}): Scenario {
     taxes: defaultTaxes(),
     survivorExpensePct: 70,
     surplusAccountId: '',
-    marketOverride: null,
-    ...partial,
   };
 }
 
-/** Deep copy with fresh ids, remapping every cross-reference (owners, deposit accounts). */
-export function duplicateScenario(source: Scenario, colorSlot: number): Scenario {
-  const idMap = new Map<string, string>();
-  const remap = <T extends { id: string }>(item: T): T => {
-    const id = newId();
-    idMap.set(item.id, id);
-    return { ...item, id };
+export function blankPlan(): PlanFile {
+  return {
+    format: 'retirement-planner',
+    version: 2,
+    settings: defaultSettings(),
+    household: emptyHousehold(),
+    scenarios: [newScenario({ name: 'Scenario A' })],
   };
-  const people = source.people.map(remap);
-  const accounts = source.accounts.map(remap);
-  const ref = (id: string) => (id ? idMap.get(id) ?? '' : '');
+}
+
+export function duplicateScenario(source: Scenario, colorSlot: number): Scenario {
   return {
     ...structuredClone(source),
     id: newId(),
     name: `${source.name} (copy)`,
     colorSlot,
-    people,
-    accounts,
-    loans: source.loans.map((l) => ({ ...l, id: newId() })),
-    expenses: source.expenses.map((e) => ({ ...e, id: newId() })),
-    incomes: source.incomes.map((i) => ({
-      ...i,
-      id: newId(),
-      ownerId: ref(i.ownerId),
-      depositToId: ref(i.depositToId),
-    })),
-    surplusAccountId: ref(source.surplusAccountId),
-    marketOverride: source.marketOverride ? { ...source.marketOverride } : null,
   };
 }
 
@@ -184,83 +205,112 @@ export function nextColorSlot(scenarios: Scenario[]): number {
   return scenarios.length % 8;
 }
 
+/** Every combination of every decision (cartesian product), named after the picked options. */
+export function allCombinations(h: Household): Scenario[] {
+  const ds = decisions(h);
+  let combos: Record<string, string>[] = [{}];
+  for (const d of ds) combos = combos.flatMap((c) => d.options.map((o) => ({ ...c, [d.key]: o.id })));
+  return combos.map((choices, i) => {
+    const label = ds.map((d) => d.options.find((o) => o.id === choices[d.key])!.label).join(' · ');
+    return newScenario({ name: label || `Scenario ${i + 1}`, colorSlot: i % 8, choices });
+  });
+}
+
+export function combinationCount(h: Household): number {
+  return decisions(h).reduce((n, d) => n * d.options.length, 1);
+}
+
 /**
- * A worked example comparing three ways of handling a job exit:
- * A) take severance as a lump sum, B) take it monthly with survivorship,
- * C) lump sum used to pay off the mortgage plus delaying Social Security.
+ * A worked example: how to take severance (lump sum vs. monthly), when to claim Social
+ * Security, and whether to pay off the mortgage — with health insurance stepping down to
+ * Medicare as each person turns 65.
  */
 export function samplePlan(): PlanFile {
   const settings = defaultSettings();
   const start = toMonthIndex(settings.startDate);
-  const inMonths = (n: number) => fromMonthIndex(start + n);
+  const inMonths = (n: number): When => ({ type: 'date', date: fromMonthIndex(start + n) });
 
-  const personA = newPerson({ name: 'Person A', birthDate: '1966-04', lifeExpectancy: 88, ssMonthlyBenefit: 2900 });
-  const personB = newPerson({ name: 'Person B', birthDate: '1968-09', lifeExpectancy: 91, ssMonthlyBenefit: 1800 });
-  const checking = newAccount({ name: 'Checking & savings', type: 'cash', balance: 45000 });
-  const brokerage = newAccount({ name: 'Brokerage', type: 'taxable', balance: 260000, stockPct: 70 });
-  const k401 = newAccount({ name: '401(k) — Person A', type: 'traditional', balance: 640000, stockPct: 60 });
-  const roth = newAccount({ name: 'Roth IRA — Person B', type: 'roth', balance: 115000, stockPct: 80 });
+  const ss = (claimAge: number) => newOption(`Claim at ${claimAge}`, { claimAge, monthlyBenefit: 0, auto: true });
+  const a62 = ss(62);
+  const a67 = ss(67);
+  const a70 = ss(70);
+  const personA = newPerson({ name: 'Person A', birthDate: '1966-04', lifeExpectancy: 88, ssKnownBenefit: 2900, ssKnownAge: 67, ssOptions: [a67, a62, a70] });
+  const personB = newPerson({ name: 'Person B', birthDate: '1968-09', lifeExpectancy: 91, ssKnownBenefit: 1800, ssKnownAge: 67, ssOptions: [ss(67), ss(62)] });
 
-  const base = newScenario({
-    name: 'A · Lump-sum severance',
-    notes: 'Severance paid as a single lump sum next month.',
-    colorSlot: 0,
+  const checking = newAccount('cash', { name: 'Checking & savings' }, 45000);
+  const brokerage = newAccount('taxable', { name: 'Brokerage', stockPct: 70 }, 260000);
+  const k401 = newAccount('traditional', { name: '401(k) — Person A' }, 640000);
+  const roth = newAccount('roth', { name: 'Roth IRA — Person B', stockPct: 80 }, 115000);
+
+  const keepMortgage = newOption('Keep paying', { payoffDate: '' });
+  const payMortgage = newOption('Pay off now', { payoffDate: fromMonthIndex(start + 2) });
+  const mortgage = newLoan({ name: 'Mortgage', balance: 285000, annualRate: 6.25, monthlyPayment: 2150, options: [keepMortgage, payMortgage] });
+  const hotTub = newLoan({ name: 'Hot tub', balance: 9500, annualRate: 8.99, monthlyPayment: 260 });
+
+  const medicare = (person: Person, preMedicare: number, medicareCost: number) =>
+    newExpense(
+      `Health insurance — ${person.name}`,
+      expenseChoice('monthly', [newPhase(preMedicare), newPhase(medicareCost, { type: 'age', personId: person.id, age: 65 })]),
+      { ownerId: person.id },
+    );
+
+  const lump = newOption('Lump sum', incomeChoice('lump', { amount: 96000, start: inMonths(1), survivorPct: 100, depositToId: brokerage.id }));
+  const monthly12 = newOption('Monthly × 12', incomeChoice('monthly', { amount: 8000, start: inMonths(1), payments: 12, survivorPct: 100 }));
+  const monthly18 = newOption('Monthly × 18', incomeChoice('monthly', { amount: 5600, start: inMonths(1), payments: 18, survivorPct: 100 }));
+  const severance = newIncome('Severance', [lump, monthly12, monthly18], { ownerId: personA.id });
+
+  const household: Household = {
+    ...emptyHousehold(),
     people: [personA, personB],
     accounts: [checking, brokerage, k401, roth],
-    loans: [
-      newLoan({ name: 'Mortgage', balance: 285000, annualRate: 6.25, monthlyPayment: 2150 }),
-      newLoan({ name: 'Hot tub', balance: 9500, annualRate: 8.99, monthlyPayment: 260 }),
-    ],
+    loans: [mortgage, hotTub],
     expenses: [
-      newExpense({ name: 'Housing (tax, insurance, utilities)', amount: 1250 }),
-      newExpense({ name: 'Groceries & household', amount: 1100 }),
-      newExpense({ name: 'Health insurance (pre-Medicare)', amount: 1600, endDate: '2031-04' }),
-      newExpense({ name: 'Medicare + supplements', amount: 750, startDate: '2031-04' }),
-      newExpense({ name: 'Cars, gas, insurance', amount: 650 }),
-      newExpense({ name: 'Everything else', amount: 1100 }),
-      newExpense({ name: 'Travel', amount: 9000, frequency: 'annual' }),
-      newExpense({ name: 'Replace car', amount: 38000, frequency: 'once', startDate: inMonths(36) }),
+      newExpense('Housing (tax, insurance, utilities)', expenseChoice('monthly', [newPhase(1250)])),
+      newExpense('Groceries & household', expenseChoice('monthly', [newPhase(1100)])),
+      medicare(personA, 850, 380),
+      medicare(personB, 850, 380),
+      newExpense('Cars, gas, insurance', expenseChoice('monthly', [newPhase(650)])),
+      newExpense('Everything else', expenseChoice('monthly', [newPhase(1100)])),
+      newExpense(
+        'Travel',
+        expenseChoice('annual', [newPhase(9000), newPhase(4000, { type: 'age', personId: personA.id, age: 75 })]),
+      ),
+      newExpense('Replace car', expenseChoice('once', [newPhase(38000, inMonths(36)), newPhase(40000, inMonths(132))])),
     ],
-    incomes: [],
+    incomes: [
+      severance,
+      newIncome(
+        'Part-time consulting',
+        [
+          newOption('3 years', incomeChoice('monthly', { amount: 2500, start: inMonths(3), payments: 36 })),
+          newOption('None', incomeChoice('monthly', { amount: 0 }), true),
+        ],
+        { ownerId: personB.id },
+      ),
+    ],
     surplusAccountId: checking.id,
-  });
-  base.incomes = [
-    newIncome({
-      name: 'Severance (lump sum)',
-      kind: 'lump',
-      amount: 96000,
-      startDate: inMonths(1),
-      ownerId: personA.id,
-      survivorPct: 100,
-      depositToId: brokerage.id,
+  };
+
+  const scenarios = [
+    newScenario({
+      name: 'A · Lump-sum severance',
+      notes: 'Severance as a lump sum into the brokerage account; both claim Social Security at 67.',
+      colorSlot: 0,
+      choices: { [severance.id]: lump.id, [mortgage.id]: keepMortgage.id, [personA.id]: a67.id },
     }),
-    newIncome({
-      name: 'Part-time consulting',
-      amount: 2500,
-      startDate: inMonths(3),
-      endDate: inMonths(39),
-      ownerId: personB.id,
+    newScenario({
+      name: 'B · Monthly severance × 18',
+      notes: 'Severance paid over 18 months; continues to Person B if Person A dies.',
+      colorSlot: 1,
+      choices: { [severance.id]: monthly18.id, [mortgage.id]: keepMortgage.id, [personA.id]: a67.id },
+    }),
+    newScenario({
+      name: 'C · Pay off mortgage, SS at 70',
+      notes: 'Lump sum, mortgage retired now, Person A delays Social Security to 70.',
+      colorSlot: 2,
+      choices: { [severance.id]: lump.id, [mortgage.id]: payMortgage.id, [personA.id]: a70.id },
     }),
   ];
 
-  const monthly = duplicateScenario(base, 1);
-  monthly.name = 'B · Monthly severance (100% survivor)';
-  monthly.notes = 'Severance paid over 18 months; continues to the survivor if Person A dies.';
-  monthly.incomes[0] = {
-    ...monthly.incomes[0],
-    name: 'Severance (monthly)',
-    kind: 'monthly',
-    amount: 5600,
-    startDate: inMonths(1),
-    endDate: inMonths(18),
-    depositToId: '',
-  };
-
-  const payoff = duplicateScenario(base, 2);
-  payoff.name = 'C · Pay off mortgage, delay SS to 70';
-  payoff.notes = 'Lump sum used to retire the mortgage now; Person A claims Social Security at 70.';
-  payoff.loans[0] = { ...payoff.loans[0], payoffDate: inMonths(2) };
-  payoff.people[0] = { ...payoff.people[0], ssClaimAge: 70, ssMonthlyBenefit: 3600 };
-
-  return { format: 'retirement-planner', version: 1, settings, scenarios: [base, monthly, payoff] };
+  return { format: 'retirement-planner', version: 2, settings, household, scenarios };
 }

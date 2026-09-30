@@ -6,12 +6,13 @@ interface LabelProps {
   label: string;
   hint?: string;
   wide?: boolean;
+  extraClass?: string;
   children: ComponentChildren;
 }
 
-export function Field({ label, hint, wide, children }: LabelProps) {
+export function Field({ label, hint, wide, extraClass, children }: LabelProps) {
   return (
-    <label class={`field${wide ? ' field--wide' : ''}`} title={hint}>
+    <label class={`field${wide ? ' field--wide' : ''}${extraClass ? ` ${extraClass}` : ''}`} title={hint}>
       <span class="field__label">
         {label}
         {hint && <span class="field__hint" aria-hidden="true">?</span>}
@@ -159,5 +160,41 @@ export function CheckField(props: { label: string; checked: boolean; onChange: (
       <input type="checkbox" checked={props.checked} onChange={(e) => props.onChange((e.target as HTMLInputElement).checked)} />
       <span>{props.label}</span>
     </label>
+  );
+}
+
+/** Age as whole years plus months (stored as a decimal: 67.5 = 67 years 6 months). */
+export function AgeField(props: { label: string; value: number; onChange: (v: number) => void; hint?: string; min?: number; max?: number }) {
+  const years = Math.floor(props.value + 1e-9);
+  const months = Math.round((props.value - years) * 12);
+  const set = (y: number, m: number) => {
+    const v = y + m / 12;
+    props.onChange(Math.min(props.max ?? 120, Math.max(props.min ?? 0, v)));
+  };
+  return (
+    <Field label={props.label} hint={props.hint}>
+      <span class="age-input">
+        <span class="input-affix">
+          <input
+            type="text"
+            inputMode="numeric"
+            value={years}
+            aria-label={`${props.label} years`}
+            onChange={(e) => {
+              const y = parseInt((e.target as HTMLInputElement).value, 10);
+              if (Number.isFinite(y)) set(y, months);
+            }}
+          />
+          <span class="input-affix__text">y</span>
+        </span>
+        <select value={months} aria-label={`${props.label} months`} onChange={(e) => set(years, +(e.target as HTMLSelectElement).value)}>
+          {Array.from({ length: 12 }, (_, m) => (
+            <option key={m} value={m}>
+              {m}m
+            </option>
+          ))}
+        </select>
+      </span>
+    </Field>
   );
 }
