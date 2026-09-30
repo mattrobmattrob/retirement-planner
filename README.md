@@ -44,12 +44,15 @@ mortgage vs. keep paying" never means re-entering the whole plan.
 - Monthly surpluses go to the chosen surplus account; shortfalls are withdrawn in withdrawal order.
   A run "fails" if spending can't be covered while anyone is alive.
 - Taxes are effective flat rates on ordinary income and brokerage withdrawals.
-- Social Security: the first two plan years assume the configured taxable share (default 85%).
-  From year 3 the IRS 0/50/85% provisional-income rule applies, using the prior plan year's
-  simulated other income (taxable income, pre-tax withdrawals, and half of brokerage withdrawals as
-  gains) with the current annualized benefit, against the fixed $32K/$44K joint or $25K/$34K
-  single thresholds. The year-by-year table shows the taxable share and dollars. A flat share is
-  available instead.
+- Social Security taxation follows calendar (tax) years. Each month is taxed at an estimate: the
+  configured share (default 85%) in the first tax year, then the IRS 0/50/85% provisional-income
+  rule applied to the prior year's other income. After each year, the actual taxable amount is
+  computed from that year's simulated income (taxable income, pre-tax withdrawals, and half of
+  brokerage withdrawals as gains, plus half of benefits, against the fixed $32K/$44K joint or
+  $25K/$34K single thresholds) and the difference is owed or refunded the following April. A
+  partial first year keeps the assumed share, since income before the plan start is unknown.
+  The year-by-year table (calendar years) shows the taxable share and dollars, with the full
+  worksheet on hover. A flat share is available instead.
 - RMDs, IRMAA, contribution limits, spousal benefits, and tax brackets are not modeled.
 - This is a planning aid, not financial advice.
 

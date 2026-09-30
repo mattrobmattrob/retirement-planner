@@ -1115,3 +1115,9 @@ th {
   white-space: normal;
   min-width: 90px;
 }
+
+.has-detail {
+  cursor: help;
+  text-decoration: underline dotted var(--text-3);
+  text-underline-offset: 3px;
+}

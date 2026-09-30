@@ -1,7 +1,8 @@
 import type { ComponentChildren } from 'preact';
 import { useState } from 'preact/hooks';
-import type { ScenarioResult } from '../engine/simulate';
-import { money, moneyCompact, monthLabel, pct, runway } from './format';
+import type { LedgerRow, ScenarioResult } from '../engine/simulate';
+import { SS_TAX_THRESHOLDS } from '../model/ssTax';
+import { money, moneyCompact, pct, runway } from './format';
 import { Legend, LineChart, type ChartSeries } from './LineChart';
 
 export const seriesColor = (slot: number) => `var(--series-${(slot % 8) + 1})`;
@@ -169,16 +170,18 @@ export function Results({ results, horizonYears, extra }: Props) {
             </select>
           </label>
         </div>
-        <p class="card__sub">A single path where markets return exactly their averages and everyone lives to their life expectancy. Future (nominal) dollars.</p>
+        <p class="card__sub">
+          A single path where markets return exactly their averages and everyone lives to their life expectancy. Calendar (tax) years, future (nominal) dollars. Hover “SS taxable” for how each year's Social Security tax was worked out.
+        </p>
         <div class="table-wrap ledger-wrap">
           <table class="ledger">
             <thead>
               <tr>
-                <th>Plan year from</th>
+                <th>Year</th>
                 <th>Ages</th>
                 <th>Income</th>
                 <th>Social Security</th>
-                <th title="Share and dollars of Social Security subject to income tax that year (IRS 0/50/85% rule, or the flat share on the Assumptions tab).">SS taxable</th>
+                <th title="Share and dollars of Social Security subject to income tax that year. Under the IRS rule the share can be anything from 0% to 85% — 50% and 85% are the caps of its two tiers.">SS taxable (0–85%)</th>
                 <th>Expenses</th>
                 <th>Debt payments</th>
                 <th>Taxes</th>
@@ -190,23 +193,32 @@ export function Results({ results, horizonYears, extra }: Props) {
             </thead>
             <tbody>
               {ledgerScenario.ledger.map((row) => (
-                <tr key={row.startDate}>
-                  <td>{monthLabel(row.startDate)}</td>
+                <tr key={row.year}>
+                  <td>{yearLabel(row)}</td>
                   <td>{row.ages.join(' / ')}</td>
                   <td>{money(row.income)}</td>
                   <td>{money(row.socialSecurity)}</td>
                   <td class="ledger__ss-tax">
-                    {row.socialSecurity > 0 ? (
-                      <>
+                    {row.ssDetail ? (
+                      <span class="has-detail" title={ssTaxExplanation(row)}>
                         {pct(row.ssTaxablePct)} <span class="muted">· {money(row.ssTaxable)}</span>
-                      </>
+                        {row.ssDetail.basis === 'assumed' && <span class="muted"> (assumed)</span>}
+                      </span>
                     ) : (
                       '—'
                     )}
                   </td>
                   <td>{money(row.expenses)}</td>
                   <td>{money(row.debtPayments)}</td>
-                  <td>{money(row.taxes)}</td>
+                  <td>
+                    {row.settlementPaid !== 0 ? (
+                      <span class="has-detail" title={`Includes ${money(Math.abs(row.settlementPaid))} ${row.settlementPaid > 0 ? 'owed' : 'refunded'} in April for ${row.year - 1} Social Security tax (true-up of the estimate)`}>
+                        {money(row.taxes)}
+                      </span>
+                    ) : (
+                      money(row.taxes)
+                    )}
+                  </td>
                   <td>{money(row.withdrawals)}</td>
                   <td class={row.endLiquid <= 1 ? 'is-bad' : ''}>{money(row.endLiquid)}</td>
                   <td>{money(row.endDebt)}</td>
@@ -219,4 +231,43 @@ export function Results({ results, horizonYears, extra }: Props) {
       </section>
     </div>
   );
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function yearLabel(row: LedgerRow): string {
+  const first = +row.firstMonth.slice(5, 7);
+  const last = +row.lastMonth.slice(5, 7);
+  return first === 1 && last === 12 ? String(row.year) : `${row.year} (${MONTHS[first - 1]}–${MONTHS[last - 1]})`;
+}
+
+/** Plain-language walk through the IRS worksheet for one ledger row. */
+function ssTaxExplanation(row: LedgerRow): string {
+  const d = row.ssDetail!;
+  const status = d.joint ? 'married filing jointly' : 'single';
+  const lines = [`${row.year} · ${status}`, `Benefits: ${money(d.benefits)}`];
+  if (d.basis === 'flat') {
+    lines.push(`Flat ${pct(row.ssTaxablePct)} taxable (Assumptions tab): ${money(d.taxable)}`);
+    return lines.join('\n');
+  }
+  if (d.basis === 'assumed') {
+    lines.push(
+      `First partial year: assumed ${pct(row.ssTaxablePct)} taxable = ${money(d.taxable)}`,
+      'Income earned before the plan start is unknown, so this year is not trued up.',
+    );
+    return lines.join('\n');
+  }
+  const t = d.joint ? SS_TAX_THRESHOLDS.joint : SS_TAX_THRESHOLDS.single;
+  const tierText = d.tier === 0 ? 'below the first threshold → none taxable' : d.tier === 50 ? 'first tier → up to 50% taxable' : 'second tier → up to 85% taxable';
+  lines.push(
+    `Other taxable income: ${money(d.otherIncome)} (taxable income + pre-tax withdrawals + ½ of brokerage withdrawals)`,
+    `Provisional income: ${money(d.provisionalIncome)} (other income + ½ of benefits)`,
+    `Thresholds ${money(t.base)} / ${money(t.adjusted)}: ${tierText}`,
+    `Taxable: ${money(d.taxable)} = ${pct(row.ssTaxablePct)} of benefits`,
+    `Withheld during the year on an estimate of ${money(d.estimatedTaxable)} taxable`,
+    d.settlement === 0
+      ? 'No true-up needed'
+      : `True-up: ${money(Math.abs(d.settlement))} ${d.settlement > 0 ? 'owed' : 'refunded'} in April ${row.year + 1}`,
+  );
+  return lines.join('\n');
 }

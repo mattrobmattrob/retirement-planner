@@ -1,6 +1,6 @@
 import { ageAt, fromMonthIndex, offsetFrom, toMonthIndex } from '../model/dates';
 import type { AccountType, MarketAssumptions, SimScenario, SimulationSettings } from '../model/types';
-import { taxableSocialSecurityShare } from '../model/ssTax';
+import { ssTaxTier, taxableSocialSecurity, taxableSocialSecurityShare } from '../model/ssTax';
 import { sampleDeathAge, solveModalAge } from './mortality';
 import { Rng } from './rng';
 
@@ -10,9 +10,30 @@ const PERCENTILES = [10, 25, 50, 75, 90] as const;
 export type Percentile = (typeof PERCENTILES)[number];
 export type Bands = Record<Percentile, number[]>;
 
+/** How Social Security was taxed in one calendar (tax) year. */
+export interface SsTaxDetail {
+  /** assumed: first partial year at the configured share; irs: trued up to the IRS rule; flat: configured share. */
+  basis: 'assumed' | 'irs' | 'flat';
+  benefits: number;
+  /** Taxable dollars of benefits for the year (after true-up). */
+  taxable: number;
+  /** Taxable dollars used for monthly withholding during the year (the estimate). */
+  estimatedTaxable: number;
+  /** Taxable non-SS income: taxable income, pre-tax withdrawals, half of brokerage withdrawals. */
+  otherIncome: number;
+  provisionalIncome: number;
+  joint: boolean;
+  tier: 0 | 50 | 85;
+  /** Tax owed (+) or refunded (−) the following April when the estimate is trued up. */
+  settlement: number;
+}
+
 export interface LedgerRow {
-  /** First month of this plan year (plan years run from the plan start month). */
-  startDate: string;
+  /** Calendar (tax) year. The first and last rows may be partial. */
+  year: number;
+  firstMonth: string;
+  lastMonth: string;
+  /** Ages at the start of the row. */
   ages: number[];
   income: number;
   socialSecurity: number;
@@ -23,6 +44,9 @@ export interface LedgerRow {
   /** Dollars of Social Security subject to income tax this year, and that as a share of benefits (%). */
   ssTaxable: number;
   ssTaxablePct: number;
+  ssDetail: SsTaxDetail | null;
+  /** Prior-year true-up included in this row's taxes (paid in April). */
+  settlementPaid: number;
   endLiquid: number;
   endLiquidReal: number;
   endDebt: number;
@@ -77,13 +101,14 @@ interface Compiled {
   ordinary: number;
   ssTaxable: number;
   irsSsRule: boolean;
+  /** Calendar month (0–11) of the plan start, so tax years can follow the calendar. */
+  startCalMonth: number;
   warnings: string[];
 }
 
 /** Share of brokerage withdrawals assumed to be realized gains when estimating provisional income. */
 const BROKERAGE_GAIN_SHARE = 0.5;
-/** Plan years taxed at the assumed share before the IRS rule has a prior year of income to use. */
-const SS_ASSUMED_YEARS = 2;
+
 
 function compile(settings: SimulationSettings, s: SimScenario): Compiled {
   const { startDate, horizonYears } = settings;
@@ -177,6 +202,7 @@ function compile(settings: SimulationSettings, s: SimScenario): Compiled {
     ordinary: s.taxes.ordinaryRate / 100,
     ssTaxable: s.taxes.ssTaxablePct / 100,
     irsSsRule: s.taxes.ssTaxRule !== 'flat',
+    startCalMonth: toMonthIndex(startDate) % 12,
     warnings,
   };
 }
@@ -228,15 +254,39 @@ interface PathResult {
   depletedAt: number;
 }
 
+/** One calendar year of the deterministic ledger. */
 interface YearAccumulator {
+  months: number;
   income: number;
   socialSecurity: number;
   expenses: number;
   debtPayments: number;
   taxes: number;
   withdrawals: number;
-  ssTaxable: number;
+  settlementPaid: number;
+  ss: SsTaxDetail | null;
   events: string[];
+  endLiquid: number;
+  endLiquidReal: number;
+  endDebt: number;
+}
+
+function newYearAccumulator(): YearAccumulator {
+  return {
+    months: 0,
+    income: 0,
+    socialSecurity: 0,
+    expenses: 0,
+    debtPayments: 0,
+    taxes: 0,
+    withdrawals: 0,
+    settlementPaid: 0,
+    ss: null,
+    events: [],
+    endLiquid: 0,
+    endLiquidReal: 0,
+    endDebt: 0,
+  };
 }
 
 /**
@@ -253,7 +303,7 @@ function runPath(
   liquidNominal: Float64Array,
   liquidReal: Float64Array,
   offset: number,
-  ledger?: { years: YearAccumulator[]; debt: number[] },
+  ledger?: YearAccumulator[],
 ): PathResult {
   const nPeople = c.people.length;
   const death = new Array<number>(nPeople);
@@ -273,39 +323,96 @@ function runPath(
   const loanBal = c.loans.map((l) => l.balance);
   let cpi = 1;
   let depletedAt = Infinity;
-  // Social Security taxation: the IRS rule needs the year's other income, which depends on
-  // withdrawals, which depend on taxes. Break the loop by using the previous plan year's other
-  // income with the current (annualized) benefit.
-  let ssShare = c.ssTaxable;
-  let priorOtherIncome = 0;
-  let yearOtherIncome = 0;
+
+  // Social Security taxation follows calendar (tax) years. Each month is taxed at an estimate:
+  // the configured share in a partial first year (income before the plan is unknown), otherwise
+  // the IRS rule on the prior year's other income. After each year the actual taxable amount is
+  // computed from that year's simulated income and the difference is settled the next April —
+  // like filing a return — which avoids the circularity of taxes driving withdrawals driving taxes.
+  let taxYear = 0;
+  let ytdSs = 0;
+  let ytdOther = 0;
+  let ytdEstimated = 0;
+  let ytdMonths = 0;
+  let priorOther = 0;
+  let pendingSettlement = 0;
+  let joint = nPeople >= 2;
+
+  const closeTaxYear = (settle: boolean) => {
+    let actual = ytdEstimated;
+    let basis: SsTaxDetail['basis'] = c.irsSsRule ? 'irs' : 'flat';
+    if (c.irsSsRule && taxYear === 0 && c.startCalMonth > 0) basis = 'assumed';
+    if (basis === 'irs') actual = taxableSocialSecurity(ytdSs, ytdOther, joint);
+    const raw = (actual - ytdEstimated) * c.ordinary;
+    const settlement = Math.abs(raw) < 0.01 ? 0 : raw;
+    if (settle) pendingSettlement = settlement;
+    if (ledger && ytdSs > 0) {
+      ledger[taxYear].ss = {
+        basis,
+        benefits: ytdSs,
+        taxable: actual,
+        estimatedTaxable: ytdEstimated,
+        otherIncome: ytdOther,
+        provisionalIncome: ytdOther + ytdSs / 2,
+        joint,
+        tier: ssTaxTier(ytdSs, ytdOther, joint),
+        settlement: basis === 'irs' ? settlement : 0,
+      };
+    }
+    // Annualize a partial first year so next year's estimate isn't biased low.
+    priorOther = ytdMonths > 0 ? (ytdOther * 12) / ytdMonths : 0;
+    ytdSs = 0;
+    ytdOther = 0;
+    ytdEstimated = 0;
+    ytdMonths = 0;
+  };
 
   const snapshot = (y: number) => {
     let liquid = 0;
     for (let i = 0; i < bal.length; i++) liquid += bal[i];
     liquidNominal[offset + y] = liquid;
     liquidReal[offset + y] = liquid / cpi;
-    if (ledger) ledger.debt[y] = loanBal.reduce((a, b) => a + b, 0);
+  };
+  const closeLedgerYear = (ty: number) => {
+    if (!ledger) return;
+    let liquid = 0;
+    for (let i = 0; i < bal.length; i++) liquid += bal[i];
+    ledger[ty].endLiquid = liquid;
+    ledger[ty].endLiquidReal = liquid / cpi;
+    ledger[ty].endDebt = loanBal.reduce((a, b) => a + b, 0);
   };
   snapshot(0);
 
   const years = c.months / 12;
   for (let m = 0; m < c.months; m++) {
-    const acc = ledger?.years[Math.floor(m / 12)];
-    if (m > 0 && m % 12 === 0) {
-      priorOtherIncome = yearOtherIncome;
-      yearOtherIncome = 0;
-    }
+    const calMonth = (c.startCalMonth + m) % 12;
+    const ty = Math.floor((c.startCalMonth + m) / 12);
     let nAlive = 0;
     for (let i = 0; i < nPeople; i++) if (m < death[i]) nAlive++;
+    if (ty !== taxYear) {
+      closeTaxYear(true);
+      taxYear = ty;
+      joint = nAlive >= 2;
+    }
     if (nPeople > 0 && nAlive === 0) {
       // Everyone has died: the plan succeeded. Freeze the estate for the remaining snapshots.
+      closeTaxYear(false);
       for (let y = Math.floor(m / 12) + 1; y <= years; y++) snapshot(y);
       break;
     }
+    const acc = ledger?.[ty];
+    if (acc) acc.months++;
+    ytdMonths++;
 
     let net = 0;
     let taxes = 0;
+
+    if (calMonth === 3 && pendingSettlement !== 0) {
+      taxes += pendingSettlement;
+      net -= pendingSettlement;
+      if (acc) acc.settlementPaid += pendingSettlement;
+      pendingSettlement = 0;
+    }
 
     for (const inc of c.incomes) {
       let gross = 0;
@@ -321,7 +428,7 @@ function runPath(
       if (gross === 0) continue;
       if (inc.inflation) gross *= cpi;
       const tax = inc.taxable ? gross * c.ordinary : 0;
-      if (inc.taxable) yearOtherIncome += gross;
+      if (inc.taxable) ytdOther += gross;
       taxes += tax;
       if (acc) acc.income += gross;
       if (inc.deposit >= 0) bal[inc.deposit] += gross - tax;
@@ -340,18 +447,15 @@ function runPath(
       ss += Math.max(own, survivor) * cpi;
     }
     if (ss > 0) {
-      if (c.irsSsRule && m >= SS_ASSUMED_YEARS * 12) {
-        let alive = 0;
-        for (let i = 0; i < nPeople; i++) if (m < death[i]) alive++;
-        ssShare = taxableSocialSecurityShare(ss * 12, priorOtherIncome, alive >= 2);
-      }
-      const tax = ss * ssShare * c.ordinary;
+      // The first tax year has no prior year to estimate from, so it uses the configured share.
+      const assumed = !c.irsSsRule || taxYear === 0;
+      const share = assumed ? c.ssTaxable : taxableSocialSecurityShare(ss * 12, priorOther, nAlive >= 2);
+      const tax = ss * share * c.ordinary;
       taxes += tax;
       net += ss - tax;
-      if (acc) {
-        acc.socialSecurity += ss;
-        acc.ssTaxable += ss * ssShare;
-      }
+      ytdSs += ss;
+      ytdEstimated += ss * share;
+      if (acc) acc.socialSecurity += ss;
     }
 
     // Household spending scales down after a death; personal expenses stop with their owner.
@@ -403,8 +507,8 @@ function runPath(
         bal[i] -= gross;
         taxes += gross - take;
         const type = c.accounts[i].type;
-        if (type === 'traditional') yearOtherIncome += gross;
-        else if (type === 'taxable') yearOtherIncome += gross * BROKERAGE_GAIN_SHARE;
+        if (type === 'traditional') ytdOther += gross;
+        else if (type === 'taxable') ytdOther += gross * BROKERAGE_GAIN_SHARE;
         if (acc) acc.withdrawals += gross;
         need -= take;
         if (need <= 1e-6) break;
@@ -442,6 +546,8 @@ function runPath(
     cpi *= 1 + infl;
 
     if ((m + 1) % 12 === 0) snapshot((m + 1) / 12);
+    if (calMonth === 11 || m === c.months - 1) closeLedgerYear(ty);
+    if (m === c.months - 1) closeTaxYear(false);
   }
 
   return { depletedAt };
@@ -491,42 +597,48 @@ export function simulateScenario(
     if (onProgress && r % 250 === 0) onProgress(r / runs);
   }
 
-  // Deterministic "expected case" ledger (fixed mortality, expected returns).
-  const ledgerYears: YearAccumulator[] = Array.from({ length: years }, () => ({
-    income: 0,
-    socialSecurity: 0,
-    expenses: 0,
-    debtPayments: 0,
-    taxes: 0,
-    withdrawals: 0,
-    ssTaxable: 0,
-    events: [],
-  }));
-  const debt = new Array<number>(snapshots).fill(0);
+  // Deterministic "expected case" ledger (fixed mortality, expected returns), by calendar year.
+  const taxYears = Math.floor((c.startCalMonth + c.months - 1) / 12) + 1;
+  const ledgerYears = Array.from({ length: taxYears }, newYearAccumulator);
   const detNominal = new Float64Array(snapshots);
   const detReal = new Float64Array(snapshots);
-  runPath(c, mp, null, false, detNominal, detReal, 0, { years: ledgerYears, debt });
+  runPath(c, mp, null, false, detNominal, detReal, 0, ledgerYears);
 
   const startIndex = toMonthIndex(settings.startDate);
+  const startYear = Math.floor(startIndex / 12);
   const snapshotDates = Array.from({ length: snapshots }, (_, y) => fromMonthIndex(startIndex + y * 12));
   const ages = c.people.map((p) => ({
     name: p.name,
     values: Array.from({ length: snapshots }, (_, y) => p.age0 + y),
   }));
 
-  // Stop the ledger once everyone has died under the fixed-mortality assumption.
-  const ledgerLength = c.people.length
-    ? Math.min(years, Math.max(1, Math.ceil(Math.max(...c.people.map((p) => p.fixedDeathMonth)) / 12)))
-    : years;
-  const ledger: LedgerRow[] = ledgerYears.slice(0, ledgerLength).map((acc, y) => ({
-    startDate: fromMonthIndex(startIndex + y * 12),
-    ages: c.people.map((p) => Math.floor(p.age0 + y)),
-    ...acc,
-    ssTaxablePct: acc.socialSecurity > 0 ? (acc.ssTaxable / acc.socialSecurity) * 100 : 0,
-    endLiquid: detNominal[y + 1],
-    endLiquidReal: detReal[y + 1],
-    endDebt: debt[y + 1],
-  }));
+  const ledger: LedgerRow[] = ledgerYears
+    .map((acc, ty) => {
+      const firstOffset = Math.max(0, ty * 12 - c.startCalMonth);
+      const ss = acc.ss;
+      return {
+        year: startYear + ty,
+        firstMonth: fromMonthIndex(startIndex + firstOffset),
+        lastMonth: fromMonthIndex(startIndex + firstOffset + acc.months - 1),
+        ages: c.people.map((p) => Math.floor(p.age0 + firstOffset / 12)),
+        income: acc.income,
+        socialSecurity: acc.socialSecurity,
+        expenses: acc.expenses,
+        debtPayments: acc.debtPayments,
+        taxes: acc.taxes,
+        withdrawals: acc.withdrawals,
+        ssTaxable: ss?.taxable ?? 0,
+        ssTaxablePct: ss && ss.benefits > 0 ? (ss.taxable / ss.benefits) * 100 : 0,
+        ssDetail: ss,
+        settlementPaid: acc.settlementPaid,
+        endLiquid: acc.endLiquid,
+        endLiquidReal: acc.endLiquidReal,
+        endDebt: acc.endDebt,
+        events: acc.events,
+      };
+    })
+    // Rows exist only for months simulated (the path stops once everyone has died).
+    .filter((_, ty) => ledgerYears[ty].months > 0);
 
   depletion.sort();
   const toYears = (months: number) => (Number.isFinite(months) ? months / 12 : null);

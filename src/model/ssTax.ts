@@ -23,3 +23,10 @@ export function taxableSocialSecurity(benefits: number, otherIncome: number, joi
 export function taxableSocialSecurityShare(benefits: number, otherIncome: number, joint: boolean): number {
   return benefits > 0 ? taxableSocialSecurity(benefits, otherIncome, joint) / benefits : 0;
 }
+
+/** Which IRS tier a year falls in: 0 (untaxed), 50 (first tier), or 85 (second tier). */
+export function ssTaxTier(benefits: number, otherIncome: number, joint: boolean): 0 | 50 | 85 {
+  const { base, adjusted } = joint ? SS_TAX_THRESHOLDS.joint : SS_TAX_THRESHOLDS.single;
+  const provisional = Math.max(0, otherIncome) + benefits / 2;
+  return provisional <= base ? 0 : provisional <= adjusted ? 50 : 85;
+}
