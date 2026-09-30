@@ -176,6 +176,8 @@ export interface Household {
   survivorExpensePct: number;
   /** Where monthly surpluses are deposited. Empty = highest-priority cash account. */
   surplusAccountId: string;
+  /** The first two people are married: enables Social Security spousal and survivor benefits. */
+  married: boolean;
 }
 
 export interface Scenario {
@@ -208,7 +210,10 @@ export interface SimPerson {
   birthDate: YearMonth;
   lifeExpectancy: number;
   ssClaimAge: number;
+  /** Own benefit when claimed at `ssClaimAge` (today's dollars). */
   ssMonthlyBenefit: number;
+  /** Benefit at full retirement age (PIA) — the base for spousal and survivor benefits. */
+  ssPia: number;
 }
 
 export interface SimAccount {
@@ -268,5 +273,7 @@ export interface SimScenario {
   survivorExpensePct: number;
   /** Index into `accounts`, or -1 for the highest-priority cash account. */
   surplusAccount: number;
+  /** The first two people are married (spousal and survivor Social Security benefits). */
+  married: boolean;
   market: MarketAssumptions;
 }

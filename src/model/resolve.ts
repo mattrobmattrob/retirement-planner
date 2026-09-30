@@ -1,5 +1,5 @@
 import { fromMonthIndex, isYearMonth, toMonthIndex } from './dates';
-import { benefitAtClaimAge } from './socialSecurity';
+import { benefitAtClaimAge, piaFromKnown } from './socialSecurity';
 import type {
   Household,
   Option,
@@ -49,10 +49,18 @@ export function describeWhen(when: When, people: Person[]): string {
   }
 }
 
+export function birthYearOf(person: Person): number {
+  return isYearMonth(person.birthDate) ? +person.birthDate.slice(0, 4) : 1960;
+}
+
 export function ssBenefit(person: Person, choice: SocialSecurityChoice): number {
   if (!choice.auto) return choice.monthlyBenefit;
-  const birthYear = isYearMonth(person.birthDate) ? +person.birthDate.slice(0, 4) : 1960;
-  return benefitAtClaimAge(person.ssKnownBenefit, person.ssKnownAge, birthYear, choice.claimAge);
+  return benefitAtClaimAge(person.ssKnownBenefit, person.ssKnownAge, birthYearOf(person), choice.claimAge);
+}
+
+/** Full-retirement-age benefit (PIA), the base for spousal and survivor benefits. */
+export function ssPia(person: Person): number {
+  return piaFromKnown(person.ssKnownBenefit, person.ssKnownAge, birthYearOf(person));
 }
 
 const monthBefore = (ym: YearMonth) => (ym ? fromMonthIndex(toMonthIndex(ym) - 1) : '');
@@ -72,6 +80,7 @@ export function resolveScenario(plan: PlanFile, scenario: Scenario): SimScenario
       lifeExpectancy: p.lifeExpectancy,
       ssClaimAge: claiming ? ss.value.claimAge : 200,
       ssMonthlyBenefit: claiming ? ssBenefit(p, ss.value) : 0,
+      ssPia: ssPia(p),
     };
   });
 
@@ -141,6 +150,7 @@ export function resolveScenario(plan: PlanFile, scenario: Scenario): SimScenario
     taxes: h.taxes,
     survivorExpensePct: h.survivorExpensePct,
     surplusAccount: accountIndex.get(h.surplusAccountId) ?? -1,
+    married: h.married && h.people.length >= 2,
     market: scenario.marketOverride ?? plan.settings.market,
   };
 }

@@ -1,5 +1,6 @@
 import { ageAt, fromMonthIndex, offsetFrom, toMonthIndex } from '../model/dates';
 import type { AccountType, MarketAssumptions, SimScenario, SimulationSettings } from '../model/types';
+import { claimFactor, fullRetirementAge, spousalFactor, survivorFactor } from '../model/socialSecurity';
 import { ssTaxTier, taxableSocialSecurity, taxableSocialSecurityShare } from '../model/ssTax';
 import { sampleDeathAge, solveModalAge } from './mortality';
 import { Rng } from './rng';
@@ -81,7 +82,23 @@ export interface ScenarioResult {
 
 interface Compiled {
   months: number;
-  people: { name: string; age0: number; claimMonth: number; benefit: number; modalAge: number; fixedDeathMonth: number }[];
+  people: {
+    name: string;
+    age0: number;
+    birthYear: number;
+    claimMonth: number;
+    /** Own benefit from `claimMonth`. */
+    benefit: number;
+    pia: number;
+    fraMonth: number;
+    /** Married partner's index, or -1. */
+    spouse: number;
+    /** Spousal top-up (added to the own benefit) from `spousalStart` while the spouse is alive. */
+    spousalTopUp: number;
+    spousalStart: number;
+    modalAge: number;
+    fixedDeathMonth: number;
+  }[];
   incomes: {
     name: string;
     kind: 'monthly' | 'lump' | 'death-benefit';
@@ -124,18 +141,37 @@ function compile(settings: SimulationSettings, s: SimScenario): Compiled {
   const warnings: string[] = [];
   const at = (ym: string, fallback: number) => offsetFrom(startDate, ym, fallback);
 
-  const people = s.people.map((p) => {
+  const people = s.people.map((p, i) => {
     const age0 = ageAt(p.birthDate, startDate);
+    const birthYear = +p.birthDate.slice(0, 4) || 1960;
     if (p.lifeExpectancy <= age0) warnings.push(`${p.name} is already past their life expectancy.`);
     return {
       name: p.name,
       age0,
+      birthYear,
       claimMonth: Math.max(0, Math.round((p.ssClaimAge - age0) * 12)),
       benefit: p.ssMonthlyBenefit,
+      pia: p.ssPia,
+      fraMonth: Math.round((fullRetirementAge(birthYear) - age0) * 12),
+      spouse: s.married && i < 2 && s.people.length >= 2 ? 1 - i : -1,
+      spousalTopUp: 0,
+      spousalStart: Infinity,
       modalAge: solveModalAge(age0, p.lifeExpectancy),
       fixedDeathMonth: Math.max(0, Math.round((p.lifeExpectancy - age0) * 12)),
     };
   });
+  // Spousal benefit: up to 50% of the partner's PIA, paid as a top-up over the person's own
+  // benefit. It starts once both have filed (deemed filing) and is reduced if that is before the
+  // person's own full retirement age. It does not grow past full retirement age.
+  for (const p of people) {
+    if (p.spouse < 0) continue;
+    const partner = people[p.spouse];
+    const excess = 0.5 * partner.pia - p.pia;
+    const start = Math.max(p.claimMonth, partner.claimMonth);
+    if (excess <= 0 || start >= months) continue;
+    p.spousalTopUp = excess * spousalFactor(p.fraMonth - start);
+    p.spousalStart = start;
+  }
 
   const accounts = s.accounts.map((a) => ({
     balance: a.balance,
@@ -328,6 +364,8 @@ function runPath(
   }
 
   const bal = c.accounts.map((a) => a.balance);
+  /** Survivor benefit per person, fixed when it starts (−1 = not yet). */
+  const survivorBase = new Array<number>(nPeople).fill(-1);
   const loanBal = c.loans.map((l) => l.balance);
   let cpi = 1;
   let depletedAt = Infinity;
@@ -448,11 +486,37 @@ function runPath(
       if (m >= death[i]) continue;
       const p = c.people[i];
       const own = m >= p.claimMonth ? p.benefit : 0;
-      let survivor = 0;
-      if (p.age0 + m / 12 >= 60) {
-        for (let j = 0; j < nPeople; j++) if (j !== i && m >= death[j]) survivor = Math.max(survivor, c.people[j].benefit);
+      let benefit = own;
+      if (p.spouse >= 0) {
+        const partner = c.people[p.spouse];
+        const partnerDeath = death[p.spouse];
+        if (m < partnerDeath) {
+          if (m >= p.spousalStart) {
+            benefit = own + p.spousalTopUp;
+            if (m === p.spousalStart) acc?.events.push(`${p.name} spousal top-up starts`);
+          }
+        } else {
+          // Survivor benefit, started when the survivor claims (or at the death, if later).
+          const start = Math.max(partnerDeath, p.claimMonth);
+          if (m >= start) {
+            if (survivorBase[i] < 0) {
+              // The deceased's benefit: what they were receiving (at least 82.5% of PIA if they
+              // claimed early), or their PIA plus any delayed credits if they died before claiming.
+              const deathAge = partner.age0 + partnerDeath / 12;
+              survivorBase[i] =
+                partnerDeath > partner.claimMonth
+                  ? Math.max(partner.benefit, 0.825 * partner.pia)
+                  : partner.pia * Math.max(1, claimFactor(partner.birthYear, deathAge));
+              survivorBase[i] *= survivorFactor(p.birthYear, p.age0 + start / 12);
+            }
+            if (survivorBase[i] > own) {
+              benefit = survivorBase[i];
+              if (m === start) acc?.events.push(`${p.name} takes survivor benefit`);
+            }
+          }
+        }
       }
-      ss += Math.max(own, survivor) * cpi;
+      ss += benefit * cpi;
     }
     if (ss > 0) {
       const assumed = !c.irsSsRule || taxYear < SS_ASSUMED_TAX_YEARS;

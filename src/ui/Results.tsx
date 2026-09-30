@@ -3,6 +3,7 @@ import { useState } from 'preact/hooks';
 import type { LedgerRow, ScenarioResult } from '../engine/simulate';
 import { SS_TAX_THRESHOLDS } from '../model/ssTax';
 import { money, moneyCompact, monthName, pct, runway } from './format';
+import { HoverDetail } from './HoverDetail';
 import { Legend, LineChart, type ChartSeries } from './LineChart';
 
 export const seriesColor = (slot: number) => `var(--series-${(slot % 8) + 1})`;
@@ -174,7 +175,7 @@ export function Results({ results, horizonYears, startDate, extra }: Props) {
           </label>
         </div>
         <p class="card__sub">
-          A single path where markets return exactly their averages and everyone lives to their life expectancy. Calendar (tax) years, future (nominal) dollars. Hover “SS taxable” for how each year's Social Security tax was worked out.
+          A single path where markets return exactly their averages and everyone lives to their life expectancy. Calendar (tax) years, future (nominal) dollars. Hover or tap an underlined value for how it was worked out.
         </p>
         <div class="table-wrap ledger-wrap">
           <table class="ledger">
@@ -203,10 +204,10 @@ export function Results({ results, horizonYears, startDate, extra }: Props) {
                   <td>{money(row.socialSecurity)}</td>
                   <td class="ledger__ss-tax">
                     {row.ssDetail ? (
-                      <span class="has-detail" title={ssTaxExplanation(row)}>
+                      <HoverDetail lines={ssTaxExplanation(row)}>
                         {pct(row.ssTaxablePct)} <span class="muted">· {money(row.ssTaxable)}</span>
                         {row.ssDetail.basis === 'assumed' && <span class="muted"> (assumed)</span>}
-                      </span>
+                      </HoverDetail>
                     ) : (
                       '—'
                     )}
@@ -215,9 +216,14 @@ export function Results({ results, horizonYears, startDate, extra }: Props) {
                   <td>{money(row.debtPayments)}</td>
                   <td>
                     {row.settlementPaid !== 0 ? (
-                      <span class="has-detail" title={`Includes ${money(Math.abs(row.settlementPaid))} ${row.settlementPaid > 0 ? 'owed' : 'refunded'} in April for ${row.year - 1} Social Security tax (true-up of the estimate)`}>
+                      <HoverDetail
+                        lines={[
+                          `${row.year} taxes: ${money(row.taxes)}`,
+                          `Includes ${money(Math.abs(row.settlementPaid))} ${row.settlementPaid > 0 ? 'owed' : 'refunded'} in April for ${row.year - 1} Social Security tax (true-up of the estimate).`,
+                        ]}
+                      >
                         {money(row.taxes)}
-                      </span>
+                      </HoverDetail>
                     ) : (
                       money(row.taxes)
                     )}
@@ -245,20 +251,20 @@ function yearLabel(row: LedgerRow): string {
 }
 
 /** Plain-language walk through the IRS worksheet for one ledger row. */
-function ssTaxExplanation(row: LedgerRow): string {
+function ssTaxExplanation(row: LedgerRow): string[] {
   const d = row.ssDetail!;
   const status = d.joint ? 'married filing jointly' : 'single';
   const lines = [`${row.year} · ${status}`, `Benefits: ${money(d.benefits)}`];
   if (d.basis === 'flat') {
     lines.push(`Flat ${pct(row.ssTaxablePct)} taxable (Assumptions tab): ${money(d.taxable)}`);
-    return lines.join('\n');
+    return lines;
   }
   if (d.basis === 'assumed') {
     lines.push(
       `Assumed ${pct(row.ssTaxablePct)} taxable = ${money(d.taxable)} (Assumptions tab)`,
       'The rest of the first year and the following year use the assumed share without a true-up; the IRS rule applies after that.',
     );
-    return lines.join('\n');
+    return lines;
   }
   const t = d.joint ? SS_TAX_THRESHOLDS.joint : SS_TAX_THRESHOLDS.single;
   const tierText = d.tier === 0 ? 'below the first threshold → none taxable' : d.tier === 50 ? 'first tier → up to 50% taxable' : 'second tier → up to 85% taxable';
@@ -272,5 +278,5 @@ function ssTaxExplanation(row: LedgerRow): string {
       ? 'No true-up needed'
       : `True-up: ${money(Math.abs(d.settlement))} ${d.settlement > 0 ? 'owed' : 'refunded'} in April ${row.year + 1}`,
   );
-  return lines.join('\n');
+  return lines;
 }

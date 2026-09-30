@@ -13,7 +13,16 @@ mortgage vs. keep paying" never means re-entering the whole plan.
 
 - **People & Social Security**: birth month, life expectancy, and the benefit from the SSA
   statement as "$X/mo if claiming at age Y". Claim-age options (year + month) are derived with
-  SSA's early-reduction and delayed-credit rules, or can be overridden. Survivors get the larger benefit.
+  SSA's early-reduction and delayed-credit rules, or can be overridden.
+- **Spousal & survivor benefits** (when the first two people are marked married):
+  - *Spousal*: up to 50% of the partner's full-retirement-age benefit (PIA), paid as a top-up over
+    the person's own benefit, starting once both have filed. Reduced if it starts before the
+    person's own full retirement age (−25/36% per month for 36 months, −5/12% beyond); no credits
+    after full retirement age.
+  - *Survivor*: the deceased's benefit — what they were receiving (at least 82.5% of their PIA if
+    they claimed early), or their PIA plus delayed credits if they died before claiming — if larger
+    than the survivor's own. It starts when the survivor claims (or at the death, if later) and is
+    reduced if that is before the survivor's full retirement age (to 71.5% at 60).
 - **Accounts**: cash, taxable brokerage, pre-tax IRA/401(k), Roth, HSA — each with a stock/bond
   mix, withdrawal order, and one or more starting-balance options. Withdrawals are grossed up for tax.
 - **Loans**: balance, rate, payment; options for "keep paying" vs. "pay off from savings in month X".
@@ -55,7 +64,7 @@ mortgage vs. keep paying" never means re-entering the whole plan.
   benefits, against the fixed $32K/$44K joint or $25K/$34K single thresholds). The year-by-year
   table shows the taxable share and dollars, with the full worksheet on hover. A flat share is
   available instead.
-- RMDs, IRMAA, contribution limits, spousal benefits, and tax brackets are not modeled.
+- RMDs, IRMAA, contribution limits, the earnings test, and tax brackets are not modeled.
 - This is a planning aid, not financial advice.
 
 ## Plan file format

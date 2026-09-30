@@ -177,6 +177,7 @@ export function emptyHousehold(): Household {
     taxes: defaultTaxes(),
     survivorExpensePct: 70,
     surplusAccountId: '',
+    married: true,
   };
 }
 

@@ -13,7 +13,7 @@ import {
   newPerson,
   newPhase,
 } from '../model/defaults';
-import { chosenOption, describeWhen, ssBenefit } from '../model/resolve';
+import { chosenOption, describeWhen, ssBenefit, ssPia } from '../model/resolve';
 import { formatAge, fullRetirementAge, MAX_CLAIM_AGE, MIN_CLAIM_AGE } from '../model/socialSecurity';
 import type {
   Account,
@@ -116,9 +116,25 @@ export function PlanEditor(props: { household: Household; scenarios: Scenario[];
   return (
     <div class="editor">
       <Section title="People & Social Security" summary={h.people.map((p) => p.name).join(' · ') || 'None'} description="Enter the benefit from your SSA statement at any age. Other claim ages are derived with SSA's early-reduction and delayed-credit rules; add several claim-age options to compare them, or use the claiming solver.">
-        {h.people.map((p) => (
-          <PersonItem key={p.id} person={p} startDate={startDate} usage={usage} patch={(x) => people.patch(p.id, x)} remove={() => people.remove(p.id)} />
+        {h.people.map((p, i) => (
+          <PersonItem
+            key={p.id}
+            person={p}
+            spouse={h.married && i < 2 && h.people.length >= 2 ? h.people[1 - i] : undefined}
+            startDate={startDate}
+            usage={usage}
+            patch={(x) => people.patch(p.id, x)}
+            remove={() => people.remove(p.id)}
+          />
         ))}
+        {h.people.length >= 2 && (
+          <CheckField
+            label={`${h.people[0].name} and ${h.people[1].name} are married (spousal & survivor Social Security benefits)`}
+            hint="Spousal: up to 50% of the partner's full-retirement-age benefit, as a top-up over your own, once both have filed. Survivor: the deceased's benefit, if larger than your own."
+            checked={h.married}
+            onChange={(married) => update((x) => ({ ...x, married }))}
+          />
+        )}
         <button type="button" class="btn btn--ghost" onClick={() => people.add(newPerson({ name: `Person ${String.fromCharCode(65 + h.people.length)}` }))}>
           + Add person
         </button>
@@ -255,8 +271,15 @@ export function PlanEditor(props: { household: Household; scenarios: Scenario[];
   );
 }
 
-function PersonItem(props: { person: Person; startDate: string; usage: Usage; patch: (p: Partial<Person>) => void; remove: () => void }) {
-  const { person: p, patch } = props;
+function PersonItem(props: {
+  person: Person;
+  spouse?: Person;
+  startDate: string;
+  usage: Usage;
+  patch: (p: Partial<Person>) => void;
+  remove: () => void;
+}) {
+  const { person: p, patch, spouse } = props;
   const valid = isYearMonth(p.birthDate);
   const age = valid ? ageAt(p.birthDate, props.startDate) : 0;
   const fra = valid ? fullRetirementAge(+p.birthDate.slice(0, 4)) : 67;
@@ -277,6 +300,7 @@ function PersonItem(props: { person: Person; startDate: string; usage: Usage; pa
         </>
       }
     >
+      {spouse && <SpousalNote person={p} spouse={spouse} />}
       <OptionTabs
         options={p.ssOptions}
         onChange={(ssOptions) => patch({ ssOptions })}
@@ -327,6 +351,19 @@ function PersonItem(props: { person: Person; startDate: string; usage: Usage; pa
         )}
       </OptionTabs>
     </Item>
+  );
+}
+
+/** Whether a spousal top-up applies, and how much at full retirement age. */
+function SpousalNote({ person, spouse }: { person: Person; spouse: Person }) {
+  const own = ssPia(person);
+  const half = ssPia(spouse) / 2;
+  return (
+    <p class="spousal-note muted">
+      {half > own
+        ? `Spousal top-up: +${money(half - own)}/mo at full retirement age — half of ${spouse.name}'s ${money(2 * half)} is ${money(half)}, above ${person.name}'s own ${money(own)}. Starts once both have filed; reduced if before full retirement age.`
+        : `No spousal top-up: ${person.name}'s own full-retirement benefit (${money(own)}) is at least half of ${spouse.name}'s (${money(half)}).`}
+    </p>
   );
 }
 

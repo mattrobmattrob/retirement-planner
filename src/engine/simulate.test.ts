@@ -21,7 +21,10 @@ const expense = (amount: number, partial: Partial<SimExpense> = {}): SimExpense 
   amount, frequency: 'monthly', startDate: '', endDate: '', inflationAdjusted: true, owner: -1, ...partial,
 });
 const person = (partial: Partial<SimPerson>): SimPerson => ({
-  name: 'P', birthDate: '1960-01', lifeExpectancy: 99, ssClaimAge: 67, ssMonthlyBenefit: 0, ...partial,
+  name: 'P', birthDate: '1960-01', lifeExpectancy: 99, ssClaimAge: 67, ssMonthlyBenefit: 0,
+  // Unless given, treat the benefit as the full-retirement-age amount.
+  ssPia: partial.ssPia ?? partial.ssMonthlyBenefit ?? 0,
+  ...partial,
 });
 const income = (amount: number, partial: Partial<SimIncome> = {}): SimIncome => ({
   name: 'Income', kind: 'monthly', amount, startDate: '2026-01', endDate: '', owner: -1, survivorPct: 0,
@@ -35,7 +38,7 @@ function scenario(partial: Partial<SimScenario>): SimScenario {
   return {
     id: 's', name: 'S', colorSlot: 0, people: [], accounts: [], loans: [], expenses: [], incomes: [],
     taxes: { ordinaryRate: 0, taxableWithdrawalRate: 0, ssTaxablePct: 0, ssTaxRule: 'flat' }, survivorExpensePct: 70,
-    surplusAccount: -1, market: flatMarket, ...partial,
+    surplusAccount: -1, married: true, market: flatMarket, ...partial,
   };
 }
 
@@ -105,7 +108,10 @@ describe('simulateScenario', () => {
     expect(r.liquidNominal[50][2]).toBeCloseTo(100_000 - 18_000 - 6_000, 6);
   });
 
-  it('gives the survivor the larger Social Security benefit', () => {
+  it('pays a spousal top-up while both are alive, then the larger survivor benefit', () => {
+    // Both past full retirement age and claiming now. The lower earner's own $1,000 is below half
+    // of the higher earner's $3,000 PIA, so they get a $500 top-up; after the death, the survivor
+    // benefit is the deceased's $3,000.
     const s = scenario({
       people: [
         person({ birthDate: '1956-01', lifeExpectancy: 71, ssClaimAge: 62, ssMonthlyBenefit: 3_000 }),
@@ -114,8 +120,42 @@ describe('simulateScenario', () => {
       accounts: [account('cash', 0)],
     });
     const r = simulateScenario(settings(), s);
-    expect(r.liquidNominal[50][1]).toBeCloseTo(48_000, 6);
-    expect(r.liquidNominal[50][2]).toBeCloseTo(48_000 + 36_000, 6);
+    expect(r.liquidNominal[50][1]).toBeCloseTo((3_000 + 1_500) * 12, 6);
+    expect(r.liquidNominal[50][2]).toBeCloseTo((3_000 + 1_500) * 12 + 3_000 * 12, 6);
+
+    // Unmarried partners get neither spousal nor survivor benefits.
+    const single = simulateScenario(settings(), { ...s, married: false });
+    expect(single.liquidNominal[50][2]).toBeCloseTo(4_000 * 12 + 1_000 * 12, 6);
+  });
+
+  it('reduces the spousal top-up when it starts before full retirement age', () => {
+    // Born 1964 (FRA 67). Spouse B claims at 62 (60 months early): own $1,000 PIA × 70% = $700,
+    // top-up ($1,500 − $1,000) × (1 − 25% − 10%) = $325. A (older) has already filed.
+    const s = scenario({
+      people: [
+        person({ birthDate: '1958-01', ssClaimAge: 62, ssMonthlyBenefit: 3_000 }),
+        person({ birthDate: '1964-01', ssClaimAge: 62, ssMonthlyBenefit: 700, ssPia: 1_000 }),
+      ],
+      accounts: [account('cash', 0)],
+    });
+    const r = simulateScenario(settings(), s);
+    expect(r.liquidNominal[50][1]).toBeCloseTo((3_000 + 700 + 325) * 12, 6);
+    expect(r.ledger[0].events).toContain('P spousal top-up starts');
+  });
+
+  it('waits for the higher earner to file before paying the spousal top-up', () => {
+    // B (born 1964, FRA 67) files at 62 in Jan 2026; A only files at 70 in Jan 2028 (B is 64,
+    // 36 months early → top-up × 75%).
+    const s = scenario({
+      people: [
+        person({ birthDate: '1958-01', ssClaimAge: 70, ssMonthlyBenefit: 3_720, ssPia: 3_000 }),
+        person({ birthDate: '1964-01', ssClaimAge: 62, ssMonthlyBenefit: 700, ssPia: 1_000 }),
+      ],
+      accounts: [account('cash', 0)],
+    });
+    const r = simulateScenario(settings(), s);
+    expect(r.liquidNominal[50][2]).toBeCloseTo(700 * 24, 6);
+    expect(r.liquidNominal[50][3] - r.liquidNominal[50][2]).toBeCloseTo((3_720 + 700 + 500 * 0.75) * 12, 6);
   });
 
   it('snapshots today, then each calendar year end', () => {

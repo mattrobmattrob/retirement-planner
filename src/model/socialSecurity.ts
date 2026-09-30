@@ -37,3 +37,29 @@ export function formatAge(age: number): string {
   const months = Math.round((age - years) * 12);
   return months ? `${years}y ${months}m` : `${years}`;
 }
+
+/** Full-retirement-age benefit (PIA) implied by a known benefit at a claim age. */
+export function piaFromKnown(knownBenefit: number, knownAge: number, birthYear: number): number {
+  return knownBenefit / claimFactor(birthYear, knownAge);
+}
+
+/**
+ * Spousal benefit as a share of its full amount (50% of the worker's PIA) when it starts
+ * `monthsEarly` months before the spouse's own full retirement age: −25/36% per month for the
+ * first 36 months, −5/12% per month beyond. No credits for starting after full retirement age.
+ */
+export function spousalFactor(monthsEarly: number): number {
+  const m = Math.max(0, monthsEarly);
+  return 1 - (Math.min(m, 36) * 25) / 3600 - (Math.max(0, m - 36) * 5) / 1200;
+}
+
+/**
+ * Survivor benefit as a share of the deceased's benefit when started at `age`: 100% at full
+ * retirement age, falling linearly to 71.5% at 60. (Uses the retirement FRA schedule, which
+ * matches the survivor schedule within a few months.)
+ */
+export function survivorFactor(birthYear: number, age: number): number {
+  const fra = fullRetirementAge(birthYear);
+  const a = Math.max(60, age);
+  return a >= fra ? 1 : 1 - (0.285 * (fra - a)) / (fra - 60);
+}
